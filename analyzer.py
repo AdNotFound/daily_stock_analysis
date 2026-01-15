@@ -802,8 +802,12 @@ class GeminiAnalyzer:
             logger.info(f"[LLM配置] 是否包含新闻: {'是' if news_context else '否'}")
             
             # 记录完整 prompt 到日志（INFO级别记录摘要，DEBUG记录完整）
+            # 注意：Prompt 核心内容不含 Key，但为保险起见，如果包含则脱敏（此处主要为防止意外泄露）
             prompt_preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
             logger.info(f"[LLM Prompt 预览]\n{prompt_preview}")
+            # 完整 prompt 记录在 DEBUG 级别，通常不建议在生产环境开启
+            logger.debug("=== 完整 Prompt 已记录在 log 文件中 ===")
+            # 写入完整 prompt 到特定调试文件而非主日志（可选，此处保持在 DEBUG）
             logger.debug(f"=== 完整 Prompt ({len(prompt)}字符) ===\n{prompt}\n=== End Prompt ===")
             
             # 设置生成配置

@@ -240,14 +240,9 @@ class NotificationService:
         avg_score = sum(r.sentiment_score for r in results) / len(results) if results else 0
         
         report_lines.extend([
-            "## 📊 操作建议汇总",
+            "## 📊 建议汇总",
             "",
-            f"| 指标 | 数值 |",
-            f"|------|------|",
-            f"| 🟢 建议买入/加仓 | **{buy_count}** 只 |",
-            f"| 🟡 建议持有/观望 | **{hold_count}** 只 |",
-            f"| 🔴 建议减仓/卖出 | **{sell_count}** 只 |",
-            f"| 📈 平均看多评分 | **{avg_score:.1f}** 分 |",
+            f"🟢加仓:{buy_count} | 🟡持有:{hold_count} | 🔴减仓:{sell_count} | 📈平均:{avg_score:.1f}分",
             "",
             "---",
             "",
@@ -1322,7 +1317,9 @@ class NotificationService:
             }
         }
         
-        logger.debug(f"飞书请求 URL: {self._feishu_url}")
+        if self._feishu_url:
+            masked_url = self._feishu_url[:30] + "..." + self._feishu_url[-10:] if len(self._feishu_url) > 40 else "hidden"
+            logger.debug(f"飞书请求 URL: {masked_url}")
         logger.debug(f"飞书请求 payload 长度: {len(content)} 字符")
         
         response = requests.post(
