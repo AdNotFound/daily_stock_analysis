@@ -92,9 +92,13 @@ class Scheduler:
         """
         self._task_callback = task
         
-        # 设置每日定时任务
-        self.schedule.every().day.at(self.schedule_time).do(self._safe_run_task)
-        logger.info(f"已设置每日定时任务，执行时间: {self.schedule_time}")
+        # 支持多个时间点（逗号分隔）
+        times = [t.strip() for t in self.schedule_time.split(',') if t.strip()]
+        
+        for t in times:
+            # 为每个时间点设置每日定时任务
+            self.schedule.every().day.at(t).do(self._safe_run_task)
+            logger.info(f"已设置每日定时任务，执行时间: {t}")
         
         if run_immediately:
             logger.info("立即执行一次任务...")

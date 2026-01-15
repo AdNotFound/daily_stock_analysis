@@ -477,7 +477,8 @@ class StockAnalysisPipeline:
         self, 
         stock_codes: Optional[List[str]] = None,
         dry_run: bool = False,
-        send_notification: bool = True
+        send_notification: bool = True,
+        force_refresh: bool = False
     ) -> List[AnalysisResult]:
         """
         运行完整的分析流程
@@ -502,22 +503,17 @@ class StockAnalysisPipeline:
         if stock_codes is None:
             stock_codes = self.config.stock_list.copy()
             
-            # 自动优选逻辑
-            if self.config.auto_select_enabled:
-                logger.info(f"正在进行自动优选（数量: {self.config.auto_select_count}）...")
-                auto_stocks = self.akshare_fetcher.get_top_stocks(self.config.auto_select_count)
-                if auto_stocks:
-                    # 合并并去重
-                    manual_count = len(stock_codes)
-                    for code in auto_stocks:
-                        if code not in stock_codes:
-                            stock_codes.append(code)
-                    logger.info(f"已增加 {len(stock_codes) - manual_count} 只自动优选股票")
+        # 自动判断是否需要强制刷新（北京时间 15:00 之后的一定是收盘后的，建议强刷以覆盖盘中数据）
+        now_hour = datetime.now().hour
+        if now_hour >= 15:
+            logger.info("当前处于盘后时间，启用强制刷新以获取完整收盘数据")
+            force_refresh = True
         
-        if not stock_codes:
-            logger.error("未配置自选股列表，请在 .env 文件中设置 STOCK_LIST")
-            return []
-        
+        # 12:00 附近的更新也建议强刷，以覆盖之前的缓存
+        if 11 <= now_hour <= 13:
+            logger.info("当前处于午间时间，启用强制刷新以获取最新早盘数据")
+            force_refresh = True
+            
         logger.info(f"===== 开始分析 {len(stock_codes)} 只股票 =====")
         logger.info(f"股票列表: {', '.join(stock_codes)}")
         logger.info(f"并发数: {self.max_workers}, 模式: {'仅获取数据' if dry_run else '完整分析'}")
@@ -530,9 +526,10 @@ class StockAnalysisPipeline:
             # 提交任务
             future_to_code = {
                 executor.submit(
-                    self.process_single_stock, 
+                    self.process_single_stock_with_refresh, 
                     code, 
-                    skip_analysis=dry_run
+                    skip_analysis=dry_run,
+                    force_refresh=force_refresh
                 ): code
                 for code in stock_codes
             }
@@ -568,6 +565,30 @@ class StockAnalysisPipeline:
         
         return results
     
+    def process_single_stock_with_refresh(
+        self, 
+        code: str,
+        skip_analysis: bool = False,
+        force_refresh: bool = False
+    ) -> Optional[AnalysisResult]:
+        """处理单只股票（带刷新参数）"""
+        logger.info(f"========== 开始处理 {code} ==========")
+        try:
+            # Step 1: 获取并保存数据
+            success, error = self.fetch_and_save_stock_data(code, force_refresh=force_refresh)
+            if not success:
+                logger.warning(f"[{code}] 数据获取失败: {error}")
+            
+            # Step 2: AI 分析
+            if skip_analysis:
+                return None
+            
+            result = self.analyze_stock(code)
+            return result
+        except Exception as e:
+            logger.exception(f"[{code}] 处理异常: {e}")
+            return None
+
     def _send_notifications(self, results: List[AnalysisResult]) -> None:
         """
         发送分析结果通知
@@ -578,10 +599,14 @@ class StockAnalysisPipeline:
             results: 分析结果列表
         """
         try:
-            logger.info("生成决策仪表盘日报...")
+            # 自动判断报告类型
+            now_hour = datetime.now().hour
+            report_type = "午间评述" if now_hour < 15 else "收盘总结"
+            logger.info(f"生成决策仪表盘日报 ({report_type})...")
             
-            # 生成决策仪表盘格式的详细日报
-            report = self.notifier.generate_dashboard_report(results)
+            # 生成详细报告
+            raw_report = self.notifier.generate_dashboard_report(results)
+            report = f"# 📊 {report_type}\n\n{raw_report}"
             
             # 保存到本地
             filepath = self.notifier.save_report_to_file(report)
