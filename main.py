@@ -500,7 +500,19 @@ class StockAnalysisPipeline:
         
         # 使用配置中的股票列表
         if stock_codes is None:
-            stock_codes = self.config.stock_list
+            stock_codes = self.config.stock_list.copy()
+            
+            # 自动优选逻辑
+            if self.config.auto_select_enabled:
+                logger.info(f"正在进行自动优选（数量: {self.config.auto_select_count}）...")
+                auto_stocks = self.akshare_fetcher.get_top_stocks(self.config.auto_select_count)
+                if auto_stocks:
+                    # 合并并去重
+                    manual_count = len(stock_codes)
+                    for code in auto_stocks:
+                        if code not in stock_codes:
+                            stock_codes.append(code)
+                    logger.info(f"已增加 {len(stock_codes) - manual_count} 只自动优选股票")
         
         if not stock_codes:
             logger.error("未配置自选股列表，请在 .env 文件中设置 STOCK_LIST")

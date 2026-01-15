@@ -61,6 +61,7 @@ def test_config():
     print(f"  股票列表: {config.stock_list}")
     print(f"  数据库路径: {config.database_path}")
     print(f"  最大并发数: {config.max_workers}")
+    print(f"  自动优选: {'开启 ✓' if config.auto_select_enabled else '关闭 ✗'} (数量: {config.auto_select_count})")
     print(f"  调试模式: {config.debug}")
     
     print_section("API 配置")

@@ -30,6 +30,8 @@ class Config:
     
     # === 自选股配置 ===
     stock_list: List[str] = field(default_factory=list)
+    auto_select_enabled: bool = False  # 是否启用自动优选
+    auto_select_count: int = 3         # 自动优选的数量
 
     # === 飞书云文档配置 ===
     feishu_app_id: Optional[str] = None
@@ -199,6 +201,8 @@ class Config:
             schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
             schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
+            auto_select_enabled=os.getenv('AUTO_SELECT_ENABLED', 'false').lower() == 'true',
+            auto_select_count=int(os.getenv('AUTO_SELECT_COUNT', '3')),
         )
     
     @classmethod

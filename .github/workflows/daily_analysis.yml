@@ -88,6 +88,8 @@ jobs:
           LOG_LEVEL: INFO
           DATA_DAYS: 60
           MAX_CONCURRENT: 3
+          AUTO_SELECT_ENABLED: ${{ secrets.AUTO_SELECT_ENABLED || 'false' }}
+          AUTO_SELECT_COUNT: ${{ secrets.AUTO_SELECT_COUNT || '3' }}
         run: |
           # 判断运行模式
           MODE="${{ github.event.inputs.mode || 'full' }}"

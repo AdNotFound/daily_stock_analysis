@@ -716,6 +716,60 @@ class AkshareFetcher(BaseFetcher):
             logger.error(f"[API错误] 获取 {stock_code} 筹码分布失败: {e}")
             return None
     
+    def get_top_stocks(self, count: int = 5) -> List[str]:
+        """
+        获取每日优选股票代码列表
+        
+        策略：
+        1. 获取 A 股实时行情 (ak.stock_zh_a_spot_em)
+        2. 排除 ST、*ST 股票
+        3. 排除上市不满 30 天的新股
+        4. 按涨跌幅降序排列
+        5. 返回前 N 只股票代码
+        
+        Args:
+            count: 优选股票数量
+            
+        Returns:
+            股票代码列表
+        """
+        import akshare as ak
+        try:
+            # 获取实时行情全量数据
+            current_time = time.time()
+            if (_realtime_cache['data'] is not None and 
+                current_time - _realtime_cache['timestamp'] < _realtime_cache['ttl']):
+                df = _realtime_cache['data']
+            else:
+                self._set_random_user_agent()
+                self._enforce_rate_limit()
+                df = ak.stock_zh_a_spot_em()
+                _realtime_cache['data'] = df
+                _realtime_cache['timestamp'] = current_time
+            
+            if df is None or df.empty:
+                return []
+            
+            # 过滤逻辑
+            # 1. 排除 ST
+            df = df[~df['名称'].str.contains('ST|退', na=False)]
+            
+            # 2. 排除停牌 (成交量为0)
+            df = df[df['成交量'] > 0]
+            
+            # 3. 按涨跌幅降序
+            df = df.sort_values(by='涨跌幅', ascending=False)
+            
+            # 4. 获取前 N
+            top_codes = df['代码'].head(count).tolist()
+            
+            logger.info(f"[自动优选] 成功筛选出 {len(top_codes)} 只表现优异的股票: {top_codes}")
+            return top_codes
+            
+        except Exception as e:
+            logger.error(f"自动优选股票失败: {e}")
+            return []
+
     def get_enhanced_data(self, stock_code: str, days: int = 60) -> Dict[str, Any]:
         """
         获取增强数据（历史K线 + 实时行情 + 筹码分布）
