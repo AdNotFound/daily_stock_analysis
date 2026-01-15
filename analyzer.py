@@ -392,7 +392,10 @@ class GeminiAnalyzer:
             api_key: Gemini API Key（可选，默认从配置读取）
         """
         config = get_config()
-        self._api_key = api_key or config.gemini_api_key
+        self._current_key_index = 0
+        self._api_keys = config.gemini_api_keys
+        self._api_key = self._api_keys[0] if self._api_keys else None
+        
         self._model = None
         self._current_model_name = None  # 当前使用的模型名称
         self._using_fallback = False  # 是否正在使用备选模型
@@ -517,6 +520,38 @@ class GeminiAnalyzer:
             logger.error(f"Gemini 模型初始化失败: {e}")
             self._model = None
     
+    def _switch_to_next_key(self) -> bool:
+        """
+        切换到下一个 API Key
+        
+        Returns:
+            是否成功切换
+        """
+        if not self._api_keys or len(self._api_keys) <= 1:
+            logger.warning("[Gemini] 只有一个 API Key，无法切换")
+            return False
+            
+        self._current_key_index = (self._current_key_index + 1) % len(self._api_keys)
+        self._api_key = self._api_keys[self._current_key_index]
+        
+        logger.warning(f"[Gemini] 尝试切换到下一个 API Key (索引: {self._current_key_index}/{len(self._api_keys)})")
+        
+        try:
+            # 重新初始化模型（保持当前使用的模型名称，如果是备选则继续用备选）
+            import google.generativeai as genai
+            genai.configure(api_key=self._api_key)
+            
+            # 使用当前选择的模型名称重新构建
+            self._model = genai.GenerativeModel(
+                model_name=self._current_model_name,
+                system_instruction=self.SYSTEM_PROMPT,
+            )
+            logger.info(f"[Gemini] 切换 API Key 并重新初始化成功 ({self._current_model_name})")
+            return True
+        except Exception as e:
+            logger.error(f"[Gemini] 切换 API Key 后初始化失败: {e}")
+            return False
+
     def _switch_to_fallback_model(self) -> bool:
         """
         切换到备选模型
@@ -657,13 +692,18 @@ class GeminiAnalyzer:
                 if is_rate_limit:
                     logger.warning(f"[Gemini] API 限流 (429)，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
                     
-                    # 如果已经重试了一半次数且还没切换过备选模型，尝试切换
-                    if attempt >= max_retries // 2 and not tried_fallback:
+                    # 优先尝试切换 API Key
+                    if self._switch_to_next_key():
+                        logger.info("[Gemini] 已切换到下一个 API Key，继续重试")
+                    # 如果不能切换 Key，且还没切换过备选模型，尝试切换模型
+                    elif attempt >= max_retries // 2 and not tried_fallback:
                         if self._switch_to_fallback_model():
                             tried_fallback = True
                             logger.info("[Gemini] 已切换到备选模型，继续重试")
                         else:
                             logger.warning("[Gemini] 切换备选模型失败，继续使用当前模型重试")
+                    else:
+                        logger.warning("[Gemini] 无法切换 Key 或模型，继续重试")
                 else:
                     # 非限流错误，记录并继续重试
                     logger.warning(f"[Gemini] API 调用失败，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")

@@ -41,6 +41,7 @@ class Config:
     
     # === AI 分析配置 ===
     gemini_api_key: Optional[str] = None
+    gemini_api_keys: List[str] = field(default_factory=list)
     gemini_model: str = "gemini-3-flash-preview"  # 主模型
     gemini_model_fallback: str = "gemini-2.5-flash"  # 备选模型
     
@@ -168,7 +169,8 @@ class Config:
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
-            gemini_api_key=os.getenv('GEMINI_API_KEY'),
+            gemini_api_keys=[k.strip() for k in os.getenv('GEMINI_API_KEY', '').split(',') if k.strip()],
+            gemini_api_key=os.getenv('GEMINI_API_KEY', '').split(',')[0].strip() if os.getenv('GEMINI_API_KEY') else None,
             gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview'),
             gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-2.5-flash'),
             gemini_request_delay=float(os.getenv('GEMINI_REQUEST_DELAY', '2.0')),
@@ -219,9 +221,9 @@ class Config:
         if not self.tushare_token:
             warnings.append("提示：未配置 Tushare Token，将使用其他数据源")
         
-        if not self.gemini_api_key and not self.openai_api_key:
+        if not self.gemini_api_keys and not self.openai_api_key:
             warnings.append("警告：未配置 Gemini 或 OpenAI API Key，AI 分析功能将不可用")
-        elif not self.gemini_api_key:
+        elif not self.gemini_api_keys:
             warnings.append("提示：未配置 Gemini API Key，将使用 OpenAI 兼容 API")
         
         if not self.tavily_api_keys and not self.serpapi_keys:
