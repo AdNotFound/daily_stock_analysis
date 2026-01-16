@@ -89,6 +89,10 @@ class AnalysisResult:
     market_sentiment: str = ""  # 市场情绪分析
     hot_topics: str = ""  # 相关热点话题
     
+    # ========== 资金流分析 (新增) ==========
+    fund_flow_analysis: str = ""    # 资金流向及博弈分析
+    lhb_analysis: str = ""          # 龙虎榜及席位分析 (新增)
+    
     # ========== 综合分析 ==========
     analysis_summary: str = ""  # 综合分析摘要
     key_points: str = ""  # 核心看点（3-5个要点）
@@ -125,6 +129,10 @@ class AnalysisResult:
             'news_summary': self.news_summary,
             'market_sentiment': self.market_sentiment,
             'hot_topics': self.hot_topics,
+            'fund_flow_analysis': self.fund_flow_analysis,
+            'lhb_analysis': self.lhb_analysis, # 新增
+            'analysis_summary': self.analysis_summary,
+            'fund_flow_analysis': self.fund_flow_analysis,
             'analysis_summary': self.analysis_summary,
             'key_points': self.key_points,
             'risk_warning': self.risk_warning,
@@ -212,6 +220,10 @@ class GeminiAnalyzer:
 
 ## 核心交易理念（必须严格遵守）
 
+### 0. 数据严谨性（防幻觉）
+- **只使用提供的上下文数据**：严禁凭空编造股价、成交额、资金买入额或任何财务指标。
+- **数据缺失处理**：如果 Prompt 中没有提供筹码或资金流向数据，请在 JSON 中将对应数值设置为 `null`，描述设置为 "数据暂未获取" 或 "不适用"。
+
 ### 1. 严进策略（不追高）
 - **绝对不追高**：当股价偏离 MA5 超过 5% 时，坚决不买入
 - **乖离率公式**：(现价 - MA5) / MA5 × 100%
@@ -235,7 +247,19 @@ class GeminiAnalyzer:
 - **次优买点**：回踩 MA10 获得支撑
 - **观望情况**：跌破 MA20 时观望
 
-### 5. 风险排查重点
+### 5. 资金流向博弈（新增判断）
+- **主力吸筹**：主力资金（超大单+大单）连续 3 日净流入，但股价处于横盘或窄幅震荡，视为强力吸筹信号
+- **主力拉升**：主力资金大幅净流入（占比 > 10%）且配合股价放量突破
+- **主力出货**：主力资金大幅净流出（占比 < -10%）且股价放量下跌或高位震荡
+- **量价背离**：股价创新高但主力资金净卖出，需高度警惕顶部风险
+
+### 6. 龙虎榜数据（实战筹码追踪 - 新增）
+- **机构溢价**：若上榜日期近期，且机构席位大额净买入（净买入 > 0），视为高确定性机会。
+- **游资接力**：若出现“顶级游资（如呼家楼、上分）”主买，暗示短线爆发力强，适合博弈，但不宜重仓。
+- **散户陷阱**：若买入榜全是“拉萨天团（东财下属营业部）”，通常暗示筹码极其分散且获利盘不稳，短期见顶概率极高。
+- **孤胆英雄**：若净买入额巨大（占成交额比重 > 5%），由少数席位驱动，属于极强信号。
+
+### 6. 风险排查重点
 - 减持公告（股东、高管减持）
 - 业绩预亏/大幅下滑
 - 监管处罚/立案调查
@@ -291,6 +315,18 @@ class GeminiAnalyzer:
                 "avg_cost": 平均成本,
                 "concentration": 筹码集中度,
                 "chip_health": "健康/一般/警惕"
+            },
+            "fund_flow": {
+                "latest_status": "主力流入/卖出描述",
+                "main_ratio": 净占比数值,
+                "flow_trend": "近5日资金流向趋势描述",
+                "flow_meaning": "资金动向深度解读"
+            },
+            "lhb_insight": {
+                "latest_status": "龙虎榜席位动向描述",
+                "inst_net": 机构净额,
+                "key_pattern": "识别出的席位特征（如：机构抢筹/游资接力/散户派发）",
+                "action_suggestion": "基于席位分布给投资者的操作建议"
             }
         },
         
@@ -342,6 +378,7 @@ class GeminiAnalyzer:
     "news_summary": "新闻摘要",
     "market_sentiment": "市场情绪",
     "hot_topics": "相关热点",
+    "fund_flow_analysis": "主力资金博弈深度解析",
     
     "search_performed": true/false,
     "data_sources": "数据来源说明"
@@ -355,6 +392,7 @@ class GeminiAnalyzer:
 - ✅ 低乖离率：<2%，最佳买点
 - ✅ 缩量回调或放量突破
 - ✅ 筹码集中健康
+- ✅ 资金积极：主力资金净流入且占比 > 5%
 - ✅ 消息面有利好催化
 
 ### 买入（60-79分）：
@@ -971,6 +1009,47 @@ class GeminiAnalyzer:
 {chr(10).join('- ' + r for r in trend.get('risk_factors', ['无'])) if trend.get('risk_factors') else '- 无'}
 """
         
+        # 添加资金流向数据
+        if 'fund_flow' in context:
+            ff = context['fund_flow']
+            ff_desc = context.get('fund_flow_desc', {})
+            
+            prompt += f"""
+### 资金流向数据（博弈指标）
+| 日期 | 主力净流入(万) | 主力占比 | 状态 |
+|------|----------------|----------|------|
+"""
+            for f in ff[-5:]: # 取近5天
+                prompt += f"| {f.get('date')} | {f.get('main_net_in'):.0f} | {f.get('main_net_in_ratio'):.2f}% | {f.get('status')} |\n"
+            
+            prompt += f"""
+#### 资金概览
+- **最新状态**：{ff_desc.get('status', '未知')}
+- **5日平均占比**：{ff_desc.get('avg_main_ratio_5d', 0):.2f}%
+"""
+
+            # 添加龙虎榜数据
+            if 'lhb_detail' in context:
+                lhb = context['lhb_detail']
+                prompt += f"""
+### 龙虎榜详情（实战席位）
+- **上榜日期**：{lhb.get('latest_lhb_date')}
+- **上榜原因**：{lhb.get('reason')}
+- **机构净买入**：{lhb.get('inst_net', 0)/10000:.1f}万
+
+| 买入席位 | 买入额(万) | 标签 |
+|----------|------------|------|
+"""
+                for d in lhb.get('buy_desks', []):
+                    prompt += f"| {d.get('name')} | {d.get('buy', 0)/10000:.0f} | {d.get('tags')} |\n"
+
+                prompt += f"""
+| 卖出席位 | 卖出额(万) | 标签 |
+|----------|------------|------|
+"""
+                for d in lhb.get('sell_desks', []):
+                    prompt += f"| {d.get('name')} | {d.get('sell', 0)/10000:.0f} | {d.get('tags')} |\n"
+        
         # 添加昨日对比数据
         if 'yesterday' in context:
             volume_change = context.get('volume_change_ratio', 'N/A')
@@ -1014,8 +1093,9 @@ class GeminiAnalyzer:
 1. ❓ 是否满足 MA5>MA10>MA20 多头排列？
 2. ❓ 当前乖离率是否在安全范围内（<5%）？—— 超过5%必须标注"严禁追高"
 3. ❓ 量能是否配合（缩量回调/放量突破）？
-4. ❓ 筹码结构是否健康？
-5. ❓ 消息面有无重大利空？（减持、处罚、业绩变脸等）
+4. ❓ 资金面是否支持（主力资金是否在持续流入或大幅买入）？
+5. ❓ 筹码结构是否健康？
+6. ❓ 消息面有无重大利空？（减持、处罚、业绩变脸等）
 
 ### 决策仪表盘要求：
 - **核心结论**：一句话说清该买/该卖/该等
@@ -1112,6 +1192,9 @@ class GeminiAnalyzer:
                     news_summary=data.get('news_summary', ''),
                     market_sentiment=data.get('market_sentiment', ''),
                     hot_topics=data.get('hot_topics', ''),
+                    # 资金与博弈 (新增)
+                    fund_flow_analysis=data.get('fund_flow_analysis', ''),
+                    lhb_analysis=data.get('lhb_analysis', ''),
                     # 综合
                     analysis_summary=data.get('analysis_summary', '分析完成'),
                     key_points=data.get('key_points', ''),

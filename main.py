@@ -44,7 +44,7 @@ from feishu_doc import FeishuDocManager
 from config import get_config, Config
 from storage import get_db, DatabaseManager
 from data_provider import DataFetcherManager
-from data_provider.akshare_fetcher import AkshareFetcher, RealtimeQuote, ChipDistribution
+from data_provider.akshare_fetcher import AkshareFetcher, RealtimeQuote, ChipDistribution, FundFlowData, LHBData
 from analyzer import GeminiAnalyzer, AnalysisResult, STOCK_NAME_MAP
 from notification import NotificationService, NotificationChannel, send_daily_report
 from search_service import SearchService, SearchResponse
@@ -278,7 +278,23 @@ class StockAnalysisPipeline:
             except Exception as e:
                 logger.warning(f"[{code}] 趋势分析失败: {e}")
             
-            # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
+            # Step 4: 获取资金流向数据
+            fund_flow: Optional[List[FundFlowData]] = None
+            try:
+                fund_flow = self.akshare_fetcher.get_individual_fund_flow(code, days=5)
+            except Exception as e:
+                logger.warning(f"[{code}] 获取资金流向分析失败: {e}")
+            
+            # Step 5: 获取龙虎榜数据 (新增)
+            lhb_data: Optional[LHBData] = None
+            try:
+                lhb_data = self.akshare_fetcher.get_stock_lhb_detail(code)
+                if lhb_data:
+                    logger.info(f"[{code}] 获取龙虎榜分析成功: 日期={lhb_data.date}, 原因={lhb_data.reason}")
+            except Exception as e:
+                logger.warning(f"[{code}] 获取龙虎榜分析失败: {e}")
+            
+            # Step 6: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
             if self.search_service.is_available:
                 logger.info(f"[{code}] 开始多维度情报搜索...")
@@ -301,23 +317,25 @@ class StockAnalysisPipeline:
             else:
                 logger.info(f"[{code}] 搜索服务不可用，跳过情报搜索")
             
-            # Step 5: 获取分析上下文（技术面数据）
+            # Step 6: 获取分析上下文（技术面数据）
             context = self.db.get_analysis_context(code)
             
             if context is None:
                 logger.warning(f"[{code}] 无法获取分析上下文，跳过分析")
                 return None
             
-            # Step 6: 增强上下文数据（添加实时行情、筹码、趋势分析结果、股票名称）
+            # Step 7: 增强上下文数据（添加实时行情、筹码、趋势分析结果、资金流、龙虎榜、股票名称）
             enhanced_context = self._enhance_context(
                 context, 
                 realtime_quote, 
                 chip_data, 
                 trend_result,
-                stock_name  # 传入股票名称
+                fund_flow,
+                lhb_data,      # 传入龙虎榜数据
+                stock_name     # 传入股票名称
             )
             
-            # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
+            # Step 8: 调用 AI 分析（传入增强的上下文和新闻）
             result = self.analyzer.analyze(enhanced_context, news_context=news_context)
             
             return result
@@ -333,6 +351,8 @@ class StockAnalysisPipeline:
         realtime_quote: Optional[RealtimeQuote],
         chip_data: Optional[ChipDistribution],
         trend_result: Optional[TrendAnalysisResult],
+        fund_flow: Optional[List[FundFlowData]],
+        lhb_data: Optional[LHBData] = None,
         stock_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -398,6 +418,29 @@ class StockAnalysisPipeline:
                 'signal_score': trend_result.signal_score,
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
+            }
+        
+        # 添加资金流向数据
+        if fund_flow:
+            enhanced['fund_flow'] = [f.to_dict() for f in fund_flow]
+            # 也可以添加一个格式化好的字符串版本，方便 AI 阅读
+            latest_flow = fund_flow[-1]
+            enhanced['fund_flow_desc'] = {
+                'latest_main_net_in': latest_flow.main_net_in,
+                'latest_main_ratio': latest_flow.main_net_in_ratio,
+                'status': latest_flow.get_flow_status(),
+                'avg_main_ratio_5d': sum(f.main_net_in_ratio for f in fund_flow) / len(fund_flow)
+            }
+        
+        # 添加龙虎榜数据 (新增)
+        if lhb_data:
+            enhanced['lhb'] = lhb_data.to_dict()
+            enhanced['lhb_detail'] = {
+                'reason': lhb_data.reason,
+                'buy_desks': lhb_data.buy_desks[:5],
+                'sell_desks': lhb_data.sell_desks[:5],
+                'inst_net': lhb_data.inst_net,
+                'latest_lhb_date': lhb_data.date
             }
         
         return enhanced
@@ -799,7 +842,7 @@ def run_full_analysis(
         
         # 2. 运行大盘复盘（如果启用且不是仅个股模式）
         market_report = ""
-        if config.market_review_enabled and not args.no_market_review:
+        if config.market_review_enabled and not args.no_market_review and not stock_codes:
             # 只调用一次，并获取结果
             review_result = run_market_review(
                 notifier=pipeline.notifier,
