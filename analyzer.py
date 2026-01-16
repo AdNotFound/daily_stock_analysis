@@ -91,7 +91,10 @@ class AnalysisResult:
     
     # ========== 资金流分析 (新增) ==========
     fund_flow_analysis: str = ""    # 资金流向及博弈分析
-    lhb_analysis: str = ""          # 龙虎榜及席位分析 (新增)
+    lhb_analysis: str = ""          # 龙虎榜及席位分析
+    
+    # ========== 行业与对比分析 (新增) ==========
+    sector_position: str = ""       # 板块地位 (在行业中的强度)
     
     # ========== 综合分析 ==========
     analysis_summary: str = ""  # 综合分析摘要
@@ -259,12 +262,22 @@ class GeminiAnalyzer:
 - **散户陷阱**：若买入榜全是“拉萨天团（东财下属营业部）”，通常暗示筹码极其分散且获利盘不稳，短期见顶概率极高。
 - **孤胆英雄**：若净买入额巨大（占成交额比重 > 5%），由少数席位驱动，属于极强信号。
 
-### 6. 风险排查重点
+### 7. 风险排查重点
 - 减持公告（股东、高管减持）
 - 业绩预亏/大幅下滑
 - 监管处罚/立案调查
 - 行业政策利空
 - 大额解禁
+- **行业拖累**：个股极强但所属板块极弱（大跌），需防范补跌风险。
+
+### 8. 行业相对强度（新增）
+- **领涨特质**：个股涨幅 > 板块涨幅 + 1%，且排名板块前 3，视为领涨龙头，溢价更高。
+- **补涨特质**：板块爆发（涨幅 > 2%）但个股滞涨，若基本面无利空，存在补涨空间。
+- **弱势淘汰**：个股跌幅 > 板块跌幅，且板块处于下跌通道，坚决清仓。
+
+### 9. 动能验证（新增）
+- **RSI (14)**：30-50 为强势区启程；> 70 警惕见顶；< 20 关注超跌反弹。
+- **KDJ (J)**：J 值向下拐头或 > 100 时，即便仍是多头排列也应停止追高。
 
 ## 输出格式：决策仪表盘 JSON
 
@@ -327,6 +340,16 @@ class GeminiAnalyzer:
                 "inst_net": 机构净额,
                 "key_pattern": "识别出的席位特征（如：机构抢筹/游资接力/散户派发）",
                 "action_suggestion": "基于席位分布给投资者的操作建议"
+            },
+            "sector_insight": {
+                "sector_name": "行业名称",
+                "relative_strength": "相对强度值",
+                "position_desc": "在行业中的地位描述"
+            },
+            "momentum_info": {
+                "rsi": "RSI数值",
+                "kdj_j": "KDJ-J值",
+                "signal": "动能信号"
             }
         },
         
@@ -943,13 +966,30 @@ class GeminiAnalyzer:
 | 成交量 | {self._format_volume(today.get('volume'))} |
 | 成交额 | {self._format_amount(today.get('amount'))} |
 
-### 均线系统（关键判断指标）
-| 均线 | 数值 | 说明 |
+### 行业板块表现（新增）
+- **所属板块**：{context.get('realtime', {}).get('industry', '未知')}
+"""
+        # 添加行业排名详细信息
+        if 'sector_analysis' in context:
+            ind = context['sector_analysis']
+            prompt += f"""
+- **板块涨跌**：{ind.get('change_pct'):+.2f}% (排名第{ind.get('rank')})
+- **相对强度**：{ind.get('relative_strength'):+.2f}% ({'领涨龙头' if ind.get('relative_strength', 0) > 1 else '跟随波动'})
+- **板块领涨**：{ind.get('leading_stock')}
+"""
+        
+        # 添加均线与动能系统数据
+        trend_data = context.get('trend_analysis', {})
+        prompt += f"""
+### 均线与动能系统（趋势验证）
+| 指标 | 数值 | 说明 |
 |------|------|------|
 | MA5 | {today.get('ma5', 'N/A')} | 短期趋势线 |
 | MA10 | {today.get('ma10', 'N/A')} | 中短期趋势线 |
 | MA20 | {today.get('ma20', 'N/A')} | 中期趋势线 |
 | 均线形态 | {context.get('ma_status', '未知')} | 多头/空头/缠绕 |
+| **RSI(14)** | **{trend_data.get('rsi', 0):.1f}** | {'超买⚠️' if trend_data.get('rsi', 0) > 70 else '超卖✅' if trend_data.get('rsi', 0) < 30 else '中性'} |
+| **KDJ(J)** | **{trend_data.get('kdj', {}).get('j', 0):.1f}** | {'极高警惕' if trend_data.get('kdj', {}).get('j', 0) > 100 else '底部区域' if trend_data.get('kdj', {}).get('j', 0) < 0 else '正常'} |
 """
         
         # 添加实时行情数据（量比、换手率等）

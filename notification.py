@@ -599,6 +599,23 @@ class NotificationService:
                         "",
                     ])
                 
+                # 行业与板块 (新增)
+                sector_data = data_persp.get('sector_insight', {})
+                if sector_data:
+                    report_lines.extend([
+                        f"**行业**: {sector_data.get('sector_name', 'N/A')} | 相对强度 {sector_data.get('relative_strength', 'N/A')}%",
+                        f"🏆 *{sector_data.get('position_desc', '')}*",
+                        "",
+                    ])
+                
+                # 动能验证 (新增)
+                momentum_data = data_persp.get('momentum_info', {})
+                if momentum_data:
+                    report_lines.extend([
+                        f"**动能**: RSI {momentum_data.get('rsi', 'N/A')} | KDJ-J {momentum_data.get('kdj_j', 'N/A')} | ⚡ *{momentum_data.get('signal', '')}*",
+                        "",
+                    ])
+                
                 # 资金流向 (新增)
                 fund_data = data_persp.get('fund_flow', {})
                 if fund_data:
@@ -614,8 +631,10 @@ class NotificationService:
                 # 龙虎榜 (新增)
                 lhb_data = data_persp.get('lhb_insight', {})
                 if lhb_data:
+                    inst_net = lhb_data.get('inst_net')
+                    inst_net_val = inst_net if inst_net is not None else 0
                     report_lines.extend([
-                        f"**龙虎榜**: {lhb_data.get('latest_status', 'N/A')} | 机构净买入 {lhb_data.get('inst_net', 0)/10000:.1f}万",
+                        f"**龙虎榜**: {lhb_data.get('latest_status', 'N/A')} | 机构净买入 {inst_net_val/10000:.1f}万",
                         f"🎯 *核心席位: {lhb_data.get('key_pattern', '')}*",
                         f"⚔️ *对阵建议: {lhb_data.get('action_suggestion', '')}*",
                         "",
@@ -796,6 +815,12 @@ class NotificationService:
             lhb_data = dashboard.get('data_perspective', {}).get('lhb_insight', {})
             if lhb_data:
                 lines.append(f"🐲 **龙虎**: {lhb_data.get('key_pattern', 'N/A')} (机构:{lhb_data.get('inst_net', 0)/10000:.0f}万)")
+                lines.append("")
+            
+            # 行业强度 (新增)
+            sector_data = dashboard.get('data_perspective', {}).get('sector_insight', {})
+            if sector_data:
+                lines.append(f"🏭 **行业**: {sector_data.get('sector_name', 'N/A')} | 相对强度 {sector_data.get('relative_strength', 'N/A')}%")
                 lines.append("")
             
             # 风险警报（最重要，醒目显示）

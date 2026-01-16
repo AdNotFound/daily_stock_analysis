@@ -90,6 +90,12 @@ class TrendAnalysisResult:
     resistance_levels: List[float] = field(default_factory=list)
     support_levels: List[float] = field(default_factory=list)
     
+    # 技术指标分析 (新增)
+    rsi: float = 50.0                # RSI 强弱指标
+    k_val: float = 50.0
+    d_val: float = 50.0
+    j_val: float = 50.0              # KDJ 指标
+    
     # 买入信号
     buy_signal: BuySignal = BuySignal.WAIT
     signal_score: int = 0            # 综合评分 0-100
@@ -119,6 +125,8 @@ class TrendAnalysisResult:
             'signal_score': self.signal_score,
             'signal_reasons': self.signal_reasons,
             'risk_factors': self.risk_factors,
+            'rsi': self.rsi,
+            'kdj': {'k': self.k_val, 'd': self.d_val, 'j': self.j_val}
         }
 
 
@@ -187,8 +195,11 @@ class StockTrendAnalyzer:
         # 4. 支撑压力分析
         self._analyze_support_resistance(df, result)
         
-        # 5. 生成买入信号
-        self._generate_signal(result)
+        # 5. 技术指标分析 (RSI, KDJ)
+        self._analyze_technical_indicators(df, result)
+        
+        # 6. 生成买入信号
+        self._generate_signal(result, df)
         
         return result
     
@@ -344,8 +355,47 @@ class StockTrendAnalyzer:
             recent_high = df['high'].iloc[-20:].max()
             if recent_high > price:
                 result.resistance_levels.append(recent_high)
+
+    def _analyze_technical_indicators(self, df: pd.DataFrame, result: TrendAnalysisResult) -> None:
+        """分析 RSI 和 KDJ 数据"""
+        try:
+            # 计算 RSI (14)
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            
+            # 处理 loss 为 0 的情况 (持续上涨)
+            rsi = pd.Series(index=df.index, dtype='float64')
+            for i in range(len(df)):
+                if loss.iloc[i] == 0:
+                    rsi.iloc[i] = 100.0 if gain.iloc[i] > 0 else 50.0
+                else:
+                    rs = gain.iloc[i] / loss.iloc[i]
+                    rsi.iloc[i] = 100 - (100 / (1 + rs))
+            df['RSI'] = rsi
+            
+            # 计算 KDJ (9, 3, 3)
+            low_list = df['low'].rolling(window=9).min()
+            high_list = df['high'].rolling(window=9).max()
+            
+            # 处理 high == low 的情况 (一字板或停牌)
+            diff = high_list - low_list
+            rsv = (df['close'] - low_list) / diff * 100
+            rsv = rsv.fillna(50.0) # 如果波动为0，RSV定为50
+            
+            df['K'] = rsv.ewm(com=2, min_periods=0).mean()
+            df['D'] = df['K'].ewm(com=2, min_periods=0).mean()
+            df['J'] = 3 * df['K'] - 2 * df['D']
+            
+            latest = df.iloc[-1]
+            result.rsi = float(latest['RSI'])
+            result.k_val = float(latest['K'])
+            result.d_val = float(latest['D'])
+            result.j_val = float(latest['J'])
+        except Exception as e:
+            logger.debug(f"计算技术指标失败: {e}")
     
-    def _generate_signal(self, result: TrendAnalysisResult) -> None:
+    def _generate_signal(self, result: TrendAnalysisResult, df: pd.DataFrame) -> None:
         """
         生成买入信号
         
@@ -423,6 +473,31 @@ class StockTrendAnalyzer:
         if result.support_ma10:
             score += 5
             reasons.append("✅ MA10支撑有效")
+        
+        # === 技术指标评分（20分）===
+        # RSI 评分
+        if 30 <= result.rsi <= 50:
+            score += 10
+            reasons.append(f"✅ RSI({result.rsi:.1f}) 处于低位强势区")
+        elif result.rsi > 80:
+            score -= 10
+            risks.append(f"⚠️ RSI({result.rsi:.1f}) 超买，警惕回撤")
+        elif result.rsi < 20:
+            score += 5
+            reasons.append(f"⚡ RSI({result.rsi:.1f}) 超卖，存在反弹需求")
+            
+        # KDJ 评分
+        if result.j_val < 0:
+            score += 10
+            reasons.append("✅ KDJ 指标超卖，处于底部区域")
+        elif result.j_val > 100:
+            score -= 10
+            risks.append("⚠️ KDJ 指标超买，短线可能见顶")
+        elif 0 < result.j_val < 20 and len(df) > 1:
+            prev_j = df['J'].iloc[-2]
+            if result.j_val > prev_j:
+                score += 5
+                reasons.append("⚡ KDJ 处于底部向上拐头")
         
         # === 综合判断 ===
         result.signal_score = score

@@ -391,7 +391,26 @@ class StockAnalysisPipeline:
                 'total_mv': realtime_quote.total_mv,
                 'circ_mv': realtime_quote.circ_mv,
                 'change_60d': realtime_quote.change_60d,
+                'industry': realtime_quote.industry,
+                'change_pct': realtime_quote.change_pct,
             }
+            
+            # 获取行业排名信息 (新增)
+            try:
+                industry_df = self.akshare_fetcher.get_industry_ranking()
+                if industry_df is not None and not industry_df.empty:
+                    ind_row = industry_df[industry_df['板块名称'] == realtime_quote.industry]
+                    if not ind_row.empty:
+                        ind_row = ind_row.iloc[0]
+                        enhanced['sector_analysis'] = {
+                            'rank': int(ind_row['排名']),
+                            'name': realtime_quote.industry,
+                            'change_pct': float(ind_row['涨跌幅']),
+                            'leading_stock': ind_row['领涨股票'],
+                            'relative_strength': realtime_quote.change_pct - float(ind_row['涨跌幅'])
+                        }
+            except Exception as e:
+                logger.debug(f"获取行业排名上下文失败: {e}")
         
         # 添加筹码分布
         if chip_data:
@@ -418,6 +437,8 @@ class StockAnalysisPipeline:
                 'signal_score': trend_result.signal_score,
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
+                'rsi': trend_result.rsi, # 新增
+                'kdj': {'k': trend_result.k_val, 'd': trend_result.d_val, 'j': trend_result.j_val}, # 新增
             }
         
         # 添加资金流向数据
@@ -602,11 +623,27 @@ class StockAnalysisPipeline:
         logger.info(f"===== 分析完成 =====")
         logger.info(f"成功: {success_count}, 失败: {fail_count}, 耗时: {elapsed_time:.2f} 秒")
         
-        # 发送通知
-        if results and send_notification and not dry_run:
-            self._send_notifications(results)
+        # 始终生成并保存本地报告，不再依赖 send_notification
+        report_path = ""
+        if results and not dry_run:
+            try:
+                # 获取标题类型
+                now_hour = datetime.now().hour
+                report_type = "午间评述" if now_hour < 15 else "收盘总结"
+                raw_report = self.notifier.generate_dashboard_report(results)
+                report_content = f"# 📊 {report_type}\n\n{raw_report}"
+                
+                # 保存到本地
+                report_path = self.notifier.save_report_to_file(report_content)
+                logger.info(f"个股分析报告已保存: {report_path}")
+                
+                # 发送通知 (如果开启)
+                if send_notification:
+                    self._send_notifications(results, report_content)
+            except Exception as e:
+                logger.error(f"生成报告或发送通知失败: {e}")
         
-        return results
+        return results, report_path
     
     def process_single_stock_with_refresh(
         self, 
@@ -632,29 +669,15 @@ class StockAnalysisPipeline:
             logger.exception(f"[{code}] 处理异常: {e}")
             return None
 
-    def _send_notifications(self, results: List[AnalysisResult]) -> None:
+    def _send_notifications(self, results: List[AnalysisResult], report_content: str) -> None:
         """
         发送分析结果通知
         
-        生成决策仪表盘格式的报告
-        
         Args:
             results: 分析结果列表
+            report_content: 已经生成好的 Markdown 内容
         """
         try:
-            # 自动判断报告类型
-            now_hour = datetime.now().hour
-            report_type = "午间评述" if now_hour < 15 else "收盘总结"
-            logger.info(f"生成决策仪表盘日报 ({report_type})...")
-            
-            # 生成详细报告
-            raw_report = self.notifier.generate_dashboard_report(results)
-            report = f"# 📊 {report_type}\n\n{raw_report}"
-            
-            # 保存到本地
-            filepath = self.notifier.save_report_to_file(report)
-            logger.info(f"决策仪表盘日报已保存: {filepath}")
-            
             # 推送通知
             if self.notifier.is_available():
                 channels = self.notifier.get_available_channels()
@@ -673,13 +696,13 @@ class StockAnalysisPipeline:
                     if channel == NotificationChannel.WECHAT:
                         continue
                     if channel == NotificationChannel.FEISHU:
-                        non_wechat_success = self.notifier.send_to_feishu(report) or non_wechat_success
+                        non_wechat_success = self.notifier.send_to_feishu(report_content) or non_wechat_success
                     elif channel == NotificationChannel.TELEGRAM:
-                        non_wechat_success = self.notifier.send_to_telegram(report) or non_wechat_success
+                        non_wechat_success = self.notifier.send_to_telegram(report_content) or non_wechat_success
                     elif channel == NotificationChannel.EMAIL:
-                        non_wechat_success = self.notifier.send_to_email(report) or non_wechat_success
+                        non_wechat_success = self.notifier.send_to_email(report_content) or non_wechat_success
                     elif channel == NotificationChannel.CUSTOM:
-                        non_wechat_success = self.notifier.send_to_custom(report) or non_wechat_success
+                        non_wechat_success = self.notifier.send_to_custom(report_content) or non_wechat_success
                     else:
                         logger.warning(f"未知通知渠道: {channel}")
 
@@ -764,7 +787,7 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_market_review(notifier: NotificationService, analyzer=None, search_service=None) -> Optional[str]:
+def run_market_review(notifier: NotificationService, analyzer=None, search_service=None, send_notification: bool = True) -> Optional[str]:
     """
     执行大盘复盘分析
     
@@ -772,6 +795,7 @@ def run_market_review(notifier: NotificationService, analyzer=None, search_servi
         notifier: 通知服务
         analyzer: AI分析器（可选）
         search_service: 搜索服务（可选）
+        send_notification: 是否发送通知
     
     Returns:
         复盘报告文本
@@ -798,7 +822,7 @@ def run_market_review(notifier: NotificationService, analyzer=None, search_servi
             logger.info(f"大盘复盘报告已保存: {filepath}")
             
             # 推送通知
-            if notifier.is_available():
+            if notifier.is_available() and send_notification:
                 # 添加标题
                 report_content = f"🎯 大盘复盘\n\n{review_report}"
                 
@@ -834,24 +858,37 @@ def run_full_analysis(
         )
         
         # 1. 运行个股分析
-        results = pipeline.run(
+        results, stock_report_path = pipeline.run(
             stock_codes=stock_codes,
             dry_run=args.dry_run,
             send_notification=not args.no_notify
         )
         
-        # 2. 运行大盘复盘（如果启用且不是仅个股模式）
+        # 2. 运行大盘复盘（如果启用）
         market_report = ""
-        if config.market_review_enabled and not args.no_market_review and not stock_codes:
-            # 只调用一次，并获取结果
+        # 如果指定了具体个股，通常也需要大盘背景，不再强制要求 not stock_codes
+        if config.market_review_enabled and not args.no_market_review:
             review_result = run_market_review(
                 notifier=pipeline.notifier,
                 analyzer=pipeline.analyzer,
-                search_service=pipeline.search_service
+                search_service=pipeline.search_service,
+                send_notification=not args.no_notify
             )
-            # 如果有结果，赋值给 market_report 用于后续飞书文档生成
             if review_result:
                 market_report = review_result
+        
+        # 3. 整合报告 (新增)
+        if results and market_report:
+            try:
+                integrated_content = f"# 📝 综合研报\n\n## 📈 大盘复盘\n\n{market_report}\n\n---\n\n"
+                stock_dashboard = pipeline.notifier.generate_dashboard_report(results)
+                integrated_content += f"## 🚀 个股决策仪表盘\n\n{stock_dashboard}"
+                
+                date_str = datetime.now().strftime('%Y%m%d')
+                filepath = pipeline.notifier.save_report_to_file(integrated_content, f"integrated_report_{date_str}.md")
+                logger.info(f"综合研报已保存: {filepath}")
+            except Exception as e:
+                logger.error(f"合并报表失败: {e}")
         
         # 输出摘要
         if results:

@@ -65,6 +65,7 @@ class RealtimeQuote:
     change_60d: float = 0.0      # 60日涨跌幅(%)
     high_52w: float = 0.0        # 52周最高
     low_52w: float = 0.0         # 52周最低
+    industry: str = ""           # 所属行业 (新增)
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -280,6 +281,13 @@ _etf_realtime_cache: Dict[str, Any] = {
     'data': None,
     'timestamp': 0,
     'ttl': 60  # 60秒缓存有效期
+}
+
+# 行业排名缓存
+_industry_ranking_cache: Dict[str, Any] = {
+    'data': None,
+    'timestamp': 0,
+    'ttl': 3600  # 1小时缓存
 }
 
 # 知名席位识别字典
@@ -646,6 +654,7 @@ class AkshareFetcher(BaseFetcher):
                 change_60d=safe_float(row.get('60日涨跌幅')),
                 high_52w=safe_float(row.get('52周最高')),
                 low_52w=safe_float(row.get('52周最低')),
+                industry=self.get_stock_industry(stock_code) # 新增
             )
             
             logger.info(f"[实时行情] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
@@ -956,6 +965,45 @@ class AkshareFetcher(BaseFetcher):
         except Exception as e:
             logger.warning(f"[LHB] 获取 {stock_code} 龙虎榜分析失败: {e}")
             return None
+
+    def get_stock_industry(self, stock_code: str) -> str:
+        """
+        获取股票所属行业
+        """
+        import akshare as ak
+        if _is_etf_code(stock_code):
+            return "指数基金"
+            
+        try:
+            df = ak.stock_individual_info_em(symbol=stock_code)
+            if df is not None and not df.empty:
+                industry = df[df['item'] == '行业']['value'].values[0]
+                return str(industry)
+        except Exception as e:
+            logger.debug(f"无法获取 {stock_code} 行业信息: {e}")
+            
+        return "未知"
+
+    def get_industry_ranking(self) -> Optional[pd.DataFrame]:
+        """
+        获取行业板块涨跌幅排名
+        """
+        import akshare as ak
+        current_time = time.time()
+        if (_industry_ranking_cache['data'] is not None and 
+            current_time - _industry_ranking_cache['timestamp'] < _industry_ranking_cache['ttl']):
+            return _industry_ranking_cache['data']
+            
+        try:
+            df = ak.stock_board_industry_name_em()
+            if df is not None and not df.empty:
+                _industry_ranking_cache['data'] = df
+                _industry_ranking_cache['timestamp'] = current_time
+                return df
+        except Exception as e:
+            logger.warning(f"获取行业排名失败: {e}")
+            
+        return None
 
     def get_top_stocks(self, count: int = 5) -> List[str]:
         """
