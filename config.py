@@ -30,6 +30,8 @@ class Config:
     
     # === 自选股配置 ===
     stock_list: List[str] = field(default_factory=list)
+    auto_select_enabled: bool = False  # 是否启用自动优选
+    auto_select_count: int = 3         # 自动优选的数量
 
     # === 飞书云文档配置 ===
     feishu_app_id: Optional[str] = None
@@ -41,6 +43,7 @@ class Config:
     
     # === AI 分析配置 ===
     gemini_api_key: Optional[str] = None
+    gemini_api_keys: List[str] = field(default_factory=list)
     gemini_model: str = "gemini-3-flash-preview"  # 主模型
     gemini_model_fallback: str = "gemini-2.5-flash"  # 备选模型
     
@@ -105,7 +108,7 @@ class Config:
     
     # === 定时任务配置 ===
     schedule_enabled: bool = False            # 是否启用定时任务
-    schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
+    schedule_time: str = "12:00, 18:00"         # 每日推送时间（HH:MM 格式，支持多个逗号分隔）
     market_review_enabled: bool = True        # 是否启用大盘复盘
     
     # === 流控配置（防封禁关键参数）===
@@ -185,7 +188,8 @@ class Config:
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
-            gemini_api_key=os.getenv('GEMINI_API_KEY'),
+            gemini_api_keys=[k.strip() for k in os.getenv('GEMINI_API_KEY', '').split(',') if k.strip()],
+            gemini_api_key=os.getenv('GEMINI_API_KEY', '').split(',')[0].strip() if os.getenv('GEMINI_API_KEY') else None,
             gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview'),
             gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-2.5-flash'),
             gemini_request_delay=float(os.getenv('GEMINI_REQUEST_DELAY', '2.0')),
@@ -219,6 +223,8 @@ class Config:
             schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
             schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
+            auto_select_enabled=os.getenv('AUTO_SELECT_ENABLED', 'false').lower() == 'true',
+            auto_select_count=int(os.getenv('AUTO_SELECT_COUNT', '3')),
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
             webui_port=int(os.getenv('WEBUI_PORT', '8000')),
@@ -273,9 +279,9 @@ class Config:
         if not self.tushare_token:
             warnings.append("提示：未配置 Tushare Token，将使用其他数据源")
         
-        if not self.gemini_api_key and not self.openai_api_key:
+        if not self.gemini_api_keys and not self.openai_api_key:
             warnings.append("警告：未配置 Gemini 或 OpenAI API Key，AI 分析功能将不可用")
-        elif not self.gemini_api_key:
+        elif not self.gemini_api_keys:
             warnings.append("提示：未配置 Gemini API Key，将使用 OpenAI 兼容 API")
         
         if not self.bocha_api_keys and not self.tavily_api_keys and not self.serpapi_keys:

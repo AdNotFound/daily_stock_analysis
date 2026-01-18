@@ -23,7 +23,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import pandas as pd
 from tenacity import (
@@ -65,6 +65,7 @@ class RealtimeQuote:
     change_60d: float = 0.0      # 60日涨跌幅(%)
     high_52w: float = 0.0        # 52周最高
     low_52w: float = 0.0         # 52周最低
+    industry: str = ""           # 所属行业 (新增)
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -168,6 +169,93 @@ class ChipDistribution:
         
         return "，".join(status_parts)
 
+
+@dataclass
+class FundFlowData:
+    """
+    资金流向数据
+    
+    包含超大单、大单、中单、小单的净流入数据
+    主力资金 = 超大单 + 大单
+    """
+    code: str
+    date: str = ""
+    
+    # 净流入（万元）
+    main_net_in: float = 0.0        # 主力净流入（超大单+大单）
+    super_large_net_in: float = 0.0 # 超大单净流入
+    large_net_in: float = 0.0       # 大单净流入
+    medium_net_in: float = 0.0      # 中单净流入
+    small_net_in: float = 0.0       # 小单净流入
+    
+    # 净流入占比(%)
+    main_net_in_ratio: float = 0.0
+    super_large_net_in_ratio: float = 0.0
+    large_net_in_ratio: float = 0.0
+    medium_net_in_ratio: float = 0.0
+    small_net_in_ratio: float = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'code': self.code,
+            'date': self.date,
+            'main_net_in': self.main_net_in,
+            'main_net_in_ratio': self.main_net_in_ratio,
+            'status': self.get_flow_status()
+        }
+    
+    def get_flow_status(self) -> str:
+        """获取资金流状态描述"""
+        # 转换为万元进行判断
+        main_net_wan = self.main_net_in / 10000
+        if main_net_wan > 10000:
+            return f"主力大幅净买入({main_net_wan/10000:.1f}亿)"
+        elif main_net_wan > 0:
+            return f"主力净买入({main_net_wan:.0f}万)"
+        elif main_net_wan < -10000:
+            return f"主力大幅净卖出({abs(main_net_wan)/10000:.1f}亿)"
+        else:
+            return f"主力净卖出({abs(main_net_wan):.0f}万)"
+
+
+@dataclass
+class LHBData:
+    """
+    龙虎榜成交统计数据
+    """
+    code: str
+    date: str = ""
+    reason: str = ""                # 上榜原因
+    net_buy: float = 0.0            # 净买入总额
+    
+    # 席位明细
+    buy_desks: List[Dict] = field(default_factory=list)  # 买入前五记录
+    sell_desks: List[Dict] = field(default_factory=list) # 卖出前五记录
+    
+    # 统计信息
+    inst_buy: float = 0.0           # 机构席位买入总额
+    inst_sell: float = 0.0          # 机构席位卖出总额
+    inst_net: float = 0.0           # 机构席位净买入
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'code': self.code,
+            'date': self.date,
+            'reason': self.reason,
+            'net_buy': self.net_buy,
+            'inst_net': self.inst_net,
+            'buy_desks_summary': [f"{d.get('name')}({d.get('tags', '')})" for d in self.buy_desks[:3]],
+            'status': self.get_summary()
+        }
+    
+    def get_summary(self) -> str:
+        if self.inst_net > 0:
+            return f"机构大笔抢筹(净买入{self.inst_net/10000:.1f}万)"
+        elif self.inst_net < 0:
+            return f"机构大笔抛售(净卖出{abs(self.inst_net)/10000:.1f}万)"
+        return "游资活跃博弈"
+
 logger = logging.getLogger(__name__)
 
 
@@ -193,6 +281,26 @@ _etf_realtime_cache: Dict[str, Any] = {
     'data': None,
     'timestamp': 0,
     'ttl': 60  # 60秒缓存有效期
+}
+
+# 行业排名缓存
+_industry_ranking_cache: Dict[str, Any] = {
+    'data': None,
+    'timestamp': 0,
+    'ttl': 3600  # 1小时缓存
+}
+
+# 知名席位识别字典
+FAMOUS_TRADERS = {
+    '机构专用': '机构',
+    '中信证券股份有限公司北京呼家楼证券营业部': '绝世顶级游资-呼家楼',
+    '中信证券北京呼家楼': '顶级游资-呼家楼',
+    '东方财富证券股份有限公司拉萨团结路': '散户大本营-拉萨天团',
+    '东方财富证券股份有限公司拉萨东环路': '散户大本营-拉萨天团',
+    '中国国际金融股份有限公司上海分公司': '量化大本营-中金上海',
+    '中金公司上海分公司': '量化大本营-中金上海',
+    '华泰证券股份有限公司总部': '量化/机构',
+    '国泰君安证券股份有限公司上海分公司': '顶级游资-上分',
 }
 
 
@@ -654,6 +762,7 @@ class AkshareFetcher(BaseFetcher):
                 change_60d=safe_float(row.get('60日涨跌幅')),
                 high_52w=safe_float(row.get('52周最高')),
                 low_52w=safe_float(row.get('52周最低')),
+                industry=self.get_stock_industry(stock_code) # 新增
             )
             
             logger.info(f"[实时行情] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
@@ -915,6 +1024,240 @@ class AkshareFetcher(BaseFetcher):
             logger.error(f"[API错误] 获取 {stock_code} 筹码分布失败: {e}")
             return None
     
+    def get_individual_fund_flow(self, stock_code: str, days: int = 5) -> Optional[List[FundFlowData]]:
+        """
+        获取个股资金流向数据
+        
+        数据来源：ak.stock_individual_fund_flow()
+        包含：主力/超大单/大单/中单/小单的净流入及占比
+        
+        Args:
+            stock_code: 股票代码
+            days: 获取天数
+            
+        Returns:
+            FundFlowData 对象列表，按日期从早到晚排序
+        """
+        import akshare as ak
+        
+        try:
+            # 防封禁策略
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            
+            # 判断市场（上证 sh, 深证 sz, 京证 bj）
+            # 6/5 开头为 sh (上海)，0/1/3 开头为 sz (深圳)，8/4 开头为 bj (北京)
+            market = "sh" if stock_code.startswith(('6', '5')) else "sz" if stock_code.startswith(('0', '1', '3')) else "bj"
+            
+            logger.info(f"[API调用] ak.stock_individual_fund_flow(stock={stock_code}, market={market})")
+            
+            df = ak.stock_individual_fund_flow(stock=stock_code, market=market)
+            
+            if df is None or df.empty:
+                logger.warning(f"[API返回] {stock_code} 资金流向数据为空")
+                return None
+                
+            # 按日期降序，取前 N 天
+            df = df.sort_values(by='日期', ascending=False).head(days)
+            
+            # 再转回升序返回
+            df = df.iloc[::-1]
+            
+            results = []
+            for _, row in df.iterrows():
+                # 安全获取字段
+                def s(col): return float(row.get(col, 0) or 0)
+                
+                # 东方财富接口列名通常如下：
+                # '日期', '收盘价', '涨跌幅', '主力净流入-净额', '主力净流入-净占比', ...
+                
+                results.append(FundFlowData(
+                    code=stock_code,
+                    date=str(row.get('日期', '')),
+                    main_net_in=s('主力净流入-净额'),
+                    super_large_net_in=s('超大单净流入-净额'),
+                    large_net_in=s('大单净流入-净额'),
+                    medium_net_in=s('中单净流入-净额'),
+                    small_net_in=s('小单净流入-净额'),
+                    main_net_in_ratio=s('主力净流入-净占比'),
+                    super_large_net_in_ratio=s('超大单净流入-净占比'),
+                    large_net_in_ratio=s('大单净流入-净占比'),
+                    medium_net_in_ratio=s('中单净流入-净占比'),
+                    small_net_in_ratio=s('小单净流入-净占比'),
+                ))
+            
+            if results:
+                latest = results[-1]
+                main_net_wan = latest.main_net_in / 10000
+                logger.info(f"[资金流向] {stock_code} 日期={latest.date}: 主力净流入={main_net_wan:.0f}万, 占比={latest.main_net_in_ratio:.2f}%")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"[API错误] 获取 {stock_code} 资金流向失败: {e}")
+            return None
+    
+    def get_stock_lhb_detail(self, stock_code: str) -> Optional[LHBData]:
+        """
+        获取个股最新的龙虎榜详情
+        """
+        import akshare as ak
+        try:
+            # 1. 获取有数据的日期列表
+            dates_df = ak.stock_lhb_stock_detail_date_em(symbol=stock_code)
+            if dates_df is None or dates_df.empty:
+                return None
+            
+            latest_date = str(dates_df.iloc[0]['交易日']).replace('-', '')
+            
+            # 2. 获取该日期的详细数据
+            detail_df = ak.stock_lhb_stock_detail_em(symbol=stock_code, date=latest_date)
+            if detail_df is None or detail_df.empty:
+                return None
+            
+            # 解析明细
+            buy_desks = []
+            sell_desks = []
+            inst_buy = 0
+            inst_sell = 0
+            
+            for _, row in detail_df.iterrows():
+                name = str(row.get('交易营业部名称', ''))
+                buy_amount = float(row.get('买入额', 0) or 0)
+                sell_amount = float(row.get('卖出额', 0) or 0)
+                
+                # 识别标签
+                tags = []
+                for key, val in FAMOUS_TRADERS.items():
+                    if key in name:
+                        tags.append(val)
+                
+                desk_info = {
+                    'name': name,
+                    'buy': buy_amount,
+                    'sell': sell_amount,
+                    'net': buy_amount - sell_amount,
+                    'tags': " | ".join(tags) if tags else ""
+                }
+                
+                if '机构' in desk_info['tags']:
+                    inst_buy += buy_amount
+                    inst_sell += sell_amount
+                
+                if buy_amount > sell_amount:
+                    buy_desks.append(desk_info)
+                else:
+                    sell_desks.append(desk_info)
+            
+            return LHBData(
+                code=stock_code,
+                date=latest_date,
+                reason=str(detail_df.iloc[0].get('类型', '异常波动')),
+                net_buy=sum(d['net'] for d in buy_desks) + sum(d['net'] for d in sell_desks),
+                buy_desks=sorted(buy_desks, key=lambda x: x['buy'], reverse=True),
+                sell_desks=sorted(sell_desks, key=lambda x: x['sell'], reverse=True),
+                inst_buy=inst_buy,
+                inst_sell=inst_sell,
+                inst_net=inst_buy - inst_sell
+            )
+            
+        except Exception as e:
+            logger.warning(f"[LHB] 获取 {stock_code} 龙虎榜分析失败: {e}")
+            return None
+
+    def get_stock_industry(self, stock_code: str) -> str:
+        """
+        获取股票所属行业
+        """
+        import akshare as ak
+        if _is_etf_code(stock_code):
+            return "指数基金"
+            
+        try:
+            df = ak.stock_individual_info_em(symbol=stock_code)
+            if df is not None and not df.empty:
+                industry = df[df['item'] == '行业']['value'].values[0]
+                return str(industry)
+        except Exception as e:
+            logger.debug(f"无法获取 {stock_code} 行业信息: {e}")
+            
+        return "未知"
+
+    def get_industry_ranking(self) -> Optional[pd.DataFrame]:
+        """
+        获取行业板块涨跌幅排名
+        """
+        import akshare as ak
+        current_time = time.time()
+        if (_industry_ranking_cache['data'] is not None and 
+            current_time - _industry_ranking_cache['timestamp'] < _industry_ranking_cache['ttl']):
+            return _industry_ranking_cache['data']
+            
+        try:
+            df = ak.stock_board_industry_name_em()
+            if df is not None and not df.empty:
+                _industry_ranking_cache['data'] = df
+                _industry_ranking_cache['timestamp'] = current_time
+                return df
+        except Exception as e:
+            logger.warning(f"获取行业排名失败: {e}")
+            
+        return None
+
+    def get_top_stocks(self, count: int = 5) -> List[str]:
+        """
+        获取每日优选股票代码列表
+        
+        策略：
+        1. 获取 A 股实时行情 (ak.stock_zh_a_spot_em)
+        2. 排除 ST、*ST 股票
+        3. 排除上市不满 30 天的新股
+        4. 按涨跌幅降序排列
+        5. 返回前 N 只股票代码
+        
+        Args:
+            count: 优选股票数量
+            
+        Returns:
+            股票代码列表
+        """
+        import akshare as ak
+        try:
+            # 获取实时行情全量数据
+            current_time = time.time()
+            if (_realtime_cache['data'] is not None and 
+                current_time - _realtime_cache['timestamp'] < _realtime_cache['ttl']):
+                df = _realtime_cache['data']
+            else:
+                self._set_random_user_agent()
+                self._enforce_rate_limit()
+                df = ak.stock_zh_a_spot_em()
+                _realtime_cache['data'] = df
+                _realtime_cache['timestamp'] = current_time
+            
+            if df is None or df.empty:
+                return []
+            
+            # 过滤逻辑
+            # 1. 排除 ST
+            df = df[~df['名称'].str.contains('ST|退', na=False)]
+            
+            # 2. 排除停牌 (成交量为0)
+            df = df[df['成交量'] > 0]
+            
+            # 3. 按涨跌幅降序
+            df = df.sort_values(by='涨跌幅', ascending=False)
+            
+            # 4. 获取前 N
+            top_codes = df['代码'].head(count).tolist()
+            
+            logger.info(f"[自动优选] 成功筛选出 {len(top_codes)} 只表现优异的股票: {top_codes}")
+            return top_codes
+            
+        except Exception as e:
+            logger.error(f"自动优选股票失败: {e}")
+            return []
+
     def get_enhanced_data(self, stock_code: str, days: int = 60) -> Dict[str, Any]:
         """
         获取增强数据（历史K线 + 实时行情 + 筹码分布）

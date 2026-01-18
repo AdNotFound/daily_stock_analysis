@@ -44,7 +44,7 @@ from feishu_doc import FeishuDocManager
 from config import get_config, Config
 from storage import get_db, DatabaseManager
 from data_provider import DataFetcherManager
-from data_provider.akshare_fetcher import AkshareFetcher, RealtimeQuote, ChipDistribution
+from data_provider.akshare_fetcher import AkshareFetcher, RealtimeQuote, ChipDistribution, FundFlowData, LHBData
 from analyzer import GeminiAnalyzer, AnalysisResult, STOCK_NAME_MAP
 from notification import NotificationService, NotificationChannel, send_daily_report
 from search_service import SearchService, SearchResponse
@@ -279,7 +279,23 @@ class StockAnalysisPipeline:
             except Exception as e:
                 logger.warning(f"[{code}] 趋势分析失败: {e}")
             
-            # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
+            # Step 4: 获取资金流向数据
+            fund_flow: Optional[List[FundFlowData]] = None
+            try:
+                fund_flow = self.akshare_fetcher.get_individual_fund_flow(code, days=5)
+            except Exception as e:
+                logger.warning(f"[{code}] 获取资金流向分析失败: {e}")
+            
+            # Step 5: 获取龙虎榜数据 (新增)
+            lhb_data: Optional[LHBData] = None
+            try:
+                lhb_data = self.akshare_fetcher.get_stock_lhb_detail(code)
+                if lhb_data:
+                    logger.info(f"[{code}] 获取龙虎榜分析成功: 日期={lhb_data.date}, 原因={lhb_data.reason}")
+            except Exception as e:
+                logger.warning(f"[{code}] 获取龙虎榜分析失败: {e}")
+            
+            # Step 6: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
             if self.search_service.is_available:
                 logger.info(f"[{code}] 开始多维度情报搜索...")
@@ -302,23 +318,25 @@ class StockAnalysisPipeline:
             else:
                 logger.info(f"[{code}] 搜索服务不可用，跳过情报搜索")
             
-            # Step 5: 获取分析上下文（技术面数据）
+            # Step 6: 获取分析上下文（技术面数据）
             context = self.db.get_analysis_context(code)
             
             if context is None:
                 logger.warning(f"[{code}] 无法获取分析上下文，跳过分析")
                 return None
             
-            # Step 6: 增强上下文数据（添加实时行情、筹码、趋势分析结果、股票名称）
+            # Step 7: 增强上下文数据（添加实时行情、筹码、趋势分析结果、资金流、龙虎榜、股票名称）
             enhanced_context = self._enhance_context(
                 context, 
                 realtime_quote, 
                 chip_data, 
                 trend_result,
-                stock_name  # 传入股票名称
+                fund_flow,
+                lhb_data,      # 传入龙虎榜数据
+                stock_name     # 传入股票名称
             )
             
-            # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
+            # Step 8: 调用 AI 分析（传入增强的上下文和新闻）
             result = self.analyzer.analyze(enhanced_context, news_context=news_context)
             
             return result
@@ -334,6 +352,8 @@ class StockAnalysisPipeline:
         realtime_quote: Optional[RealtimeQuote],
         chip_data: Optional[ChipDistribution],
         trend_result: Optional[TrendAnalysisResult],
+        fund_flow: Optional[List[FundFlowData]],
+        lhb_data: Optional[LHBData] = None,
         stock_name: str = ""
     ) -> Dict[str, Any]:
         """
@@ -372,7 +392,26 @@ class StockAnalysisPipeline:
                 'total_mv': realtime_quote.total_mv,
                 'circ_mv': realtime_quote.circ_mv,
                 'change_60d': realtime_quote.change_60d,
+                'industry': realtime_quote.industry,
+                'change_pct': realtime_quote.change_pct,
             }
+            
+            # 获取行业排名信息 (新增)
+            try:
+                industry_df = self.akshare_fetcher.get_industry_ranking()
+                if industry_df is not None and not industry_df.empty:
+                    ind_row = industry_df[industry_df['板块名称'] == realtime_quote.industry]
+                    if not ind_row.empty:
+                        ind_row = ind_row.iloc[0]
+                        enhanced['sector_analysis'] = {
+                            'rank': int(ind_row['排名']),
+                            'name': realtime_quote.industry,
+                            'change_pct': float(ind_row['涨跌幅']),
+                            'leading_stock': ind_row['领涨股票'],
+                            'relative_strength': realtime_quote.change_pct - float(ind_row['涨跌幅'])
+                        }
+            except Exception as e:
+                logger.debug(f"获取行业排名上下文失败: {e}")
         
         # 添加筹码分布
         if chip_data:
@@ -399,6 +438,31 @@ class StockAnalysisPipeline:
                 'signal_score': trend_result.signal_score,
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
+                'rsi': trend_result.rsi, # 新增
+                'kdj': {'k': trend_result.k_val, 'd': trend_result.d_val, 'j': trend_result.j_val}, # 新增
+            }
+        
+        # 添加资金流向数据
+        if fund_flow:
+            enhanced['fund_flow'] = [f.to_dict() for f in fund_flow]
+            # 也可以添加一个格式化好的字符串版本，方便 AI 阅读
+            latest_flow = fund_flow[-1]
+            enhanced['fund_flow_desc'] = {
+                'latest_main_net_in': latest_flow.main_net_in,
+                'latest_main_ratio': latest_flow.main_net_in_ratio,
+                'status': latest_flow.get_flow_status(),
+                'avg_main_ratio_5d': sum(f.main_net_in_ratio for f in fund_flow) / len(fund_flow)
+            }
+        
+        # 添加龙虎榜数据 (新增)
+        if lhb_data:
+            enhanced['lhb'] = lhb_data.to_dict()
+            enhanced['lhb_detail'] = {
+                'reason': lhb_data.reason,
+                'buy_desks': lhb_data.buy_desks[:5],
+                'sell_desks': lhb_data.sell_desks[:5],
+                'inst_net': lhb_data.inst_net,
+                'latest_lhb_date': lhb_data.date
             }
         
         return enhanced
@@ -492,7 +556,8 @@ class StockAnalysisPipeline:
         self, 
         stock_codes: Optional[List[str]] = None,
         dry_run: bool = False,
-        send_notification: bool = True
+        send_notification: bool = True,
+        force_refresh: bool = False
     ) -> List[AnalysisResult]:
         """
         运行完整的分析流程
@@ -515,13 +580,26 @@ class StockAnalysisPipeline:
         
         # 使用配置中的股票列表
         if stock_codes is None:
+        # 使用配置中的股票列表
+        if stock_codes is None:
             self.config.refresh_stock_list()
-            stock_codes = self.config.stock_list
-        
+            stock_codes = self.config.stock_list.copy()
+            
         if not stock_codes:
             logger.error("未配置自选股列表，请在 .env 文件中设置 STOCK_LIST")
             return []
+            
+        # 自动判断是否需要强制刷新（北京时间 15:00 之后的一定是收盘后的，建议强刷以覆盖盘中数据）
+        now_hour = datetime.now().hour
+        if now_hour >= 15:
+            logger.info("当前处于盘后时间，启用强制刷新以获取完整收盘数据")
+            force_refresh = True
         
+        # 12:00 附近的更新也建议强刷，以覆盖之前的缓存
+        if 11 <= now_hour <= 13:
+            logger.info("当前处于午间时间，启用强制刷新以获取最新早盘数据")
+            force_refresh = True
+            
         logger.info(f"===== 开始分析 {len(stock_codes)} 只股票 =====")
         logger.info(f"股票列表: {', '.join(stock_codes)}")
         logger.info(f"并发数: {self.max_workers}, 模式: {'仅获取数据' if dry_run else '完整分析'}")
@@ -539,9 +617,10 @@ class StockAnalysisPipeline:
             # 提交任务
             future_to_code = {
                 executor.submit(
-                    self.process_single_stock, 
+                    self.process_single_stock_with_refresh, 
                     code, 
                     skip_analysis=dry_run,
+                    force_refresh=force_refresh,
                     single_stock_notify=single_stock_notify and send_notification
                 ): code
                 for code in stock_codes
@@ -572,41 +651,80 @@ class StockAnalysisPipeline:
         logger.info(f"===== 分析完成 =====")
         logger.info(f"成功: {success_count}, 失败: {fail_count}, 耗时: {elapsed_time:.2f} 秒")
         
-        # 发送通知（单股推送模式下跳过汇总推送，避免重复）
-        if results and send_notification and not dry_run:
-            if single_stock_notify:
-                # 单股推送模式：只保存汇总报告，不再重复推送
-                logger.info("单股推送模式：跳过汇总推送，仅保存报告到本地")
-                self._send_notifications(results, skip_push=True)
-            else:
-                self._send_notifications(results)
+        # 始终生成并保存本地报告，不再依赖 send_notification
+        report_path = ""
+        if results and not dry_run:
+            try:
+                # 获取标题类型
+                now_hour = datetime.now().hour
+                report_type = "午间评述" if now_hour < 15 else "收盘总结"
+                
+                # 生成决策仪表盘格式的详细日报
+                raw_report = self.notifier.generate_dashboard_report(results)
+                report_content = f"# 📊 {report_type}\n\n{raw_report}"
+                
+                # 保存到本地
+                report_path = self.notifier.save_report_to_file(report_content)
+                logger.info(f"个股分析报告已保存: {report_path}")
+                
+                # 发送通知 (如果开启)
+                if send_notification:
+                    if single_stock_notify:
+                        # 单股推送模式：仅保存报告到本地，跳过汇总推送
+                        logger.info("单股推送模式：跳过汇总推送，已完成单股推送")
+                    else:
+                        self._send_notifications(results, report_content)
+            except Exception as e:
+                logger.error(f"生成报告或发送通知失败: {e}")
         
-        return results
+        return results, report_path
     
-    def _send_notifications(self, results: List[AnalysisResult], skip_push: bool = False) -> None:
+    def process_single_stock_with_refresh(
+        self, 
+        code: str,
+        skip_analysis: bool = False,
+        force_refresh: bool = False,
+        single_stock_notify: bool = False
+    ) -> Optional[AnalysisResult]:
+        """处理单只股票（带刷新参数）"""
+        logger.info(f"========== 开始处理 {code} ==========")
+        try:
+            # Step 1: 获取并保存数据
+            success, error = self.fetch_and_save_stock_data(code, force_refresh=force_refresh)
+            if not success:
+                logger.warning(f"[{code}] 数据获取失败: {error}")
+            
+            # Step 2: AI 分析
+            if skip_analysis:
+                return None
+            
+            result = self.analyze_stock(code)
+
+            # 单股推送模式（#55）：每分析完一只立即推送
+            if result and single_stock_notify and self.notifier.is_available():
+                try:
+                    single_report = self.notifier.generate_single_stock_report(result)
+                    if self.notifier.send(single_report):
+                        logger.info(f"[{code}] 单股推送成功")
+                    else:
+                        logger.warning(f"[{code}] 单股推送失败")
+                except Exception as e:
+                    logger.error(f"[{code}] 单股推送异常: {e}")
+
+            return result
+        except Exception as e:
+            logger.exception(f"[{code}] 处理异常: {e}")
+            return None
+
+    def _send_notifications(self, results: List[AnalysisResult], report_content: str) -> None:
         """
         发送分析结果通知
         
-        生成决策仪表盘格式的报告
-        
         Args:
             results: 分析结果列表
-            skip_push: 是否跳过推送（仅保存到本地，用于单股推送模式）
+            report_content: 已经生成好的 Markdown 内容
         """
         try:
-            logger.info("生成决策仪表盘日报...")
-            
-            # 生成决策仪表盘格式的详细日报
-            report = self.notifier.generate_dashboard_report(results)
-            
-            # 保存到本地
-            filepath = self.notifier.save_report_to_file(report)
-            logger.info(f"决策仪表盘日报已保存: {filepath}")
-            
-            # 跳过推送（单股推送模式）
-            if skip_push:
-                return
-            
             # 推送通知
             if self.notifier.is_available():
                 channels = self.notifier.get_available_channels()
@@ -625,13 +743,13 @@ class StockAnalysisPipeline:
                     if channel == NotificationChannel.WECHAT:
                         continue
                     if channel == NotificationChannel.FEISHU:
-                        non_wechat_success = self.notifier.send_to_feishu(report) or non_wechat_success
+                        non_wechat_success = self.notifier.send_to_feishu(report_content) or non_wechat_success
                     elif channel == NotificationChannel.TELEGRAM:
-                        non_wechat_success = self.notifier.send_to_telegram(report) or non_wechat_success
+                        non_wechat_success = self.notifier.send_to_telegram(report_content) or non_wechat_success
                     elif channel == NotificationChannel.EMAIL:
-                        non_wechat_success = self.notifier.send_to_email(report) or non_wechat_success
+                        non_wechat_success = self.notifier.send_to_email(report_content) or non_wechat_success
                     elif channel == NotificationChannel.CUSTOM:
-                        non_wechat_success = self.notifier.send_to_custom(report) or non_wechat_success
+                        non_wechat_success = self.notifier.send_to_custom(report_content) or non_wechat_success
                     else:
                         logger.warning(f"未知通知渠道: {channel}")
 
@@ -729,7 +847,7 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_market_review(notifier: NotificationService, analyzer=None, search_service=None) -> Optional[str]:
+def run_market_review(notifier: NotificationService, analyzer=None, search_service=None, send_notification: bool = True) -> Optional[str]:
     """
     执行大盘复盘分析
     
@@ -737,6 +855,7 @@ def run_market_review(notifier: NotificationService, analyzer=None, search_servi
         notifier: 通知服务
         analyzer: AI分析器（可选）
         search_service: 搜索服务（可选）
+        send_notification: 是否发送通知
     
     Returns:
         复盘报告文本
@@ -763,7 +882,7 @@ def run_market_review(notifier: NotificationService, analyzer=None, search_servi
             logger.info(f"大盘复盘报告已保存: {filepath}")
             
             # 推送通知
-            if notifier.is_available():
+            if notifier.is_available() and send_notification:
                 # 添加标题
                 report_content = f"🎯 大盘复盘\n\n{review_report}"
                 
@@ -803,24 +922,37 @@ def run_full_analysis(
         )
         
         # 1. 运行个股分析
-        results = pipeline.run(
+        results, stock_report_path = pipeline.run(
             stock_codes=stock_codes,
             dry_run=args.dry_run,
             send_notification=not args.no_notify
         )
         
-        # 2. 运行大盘复盘（如果启用且不是仅个股模式）
+        # 2. 运行大盘复盘（如果启用）
         market_report = ""
+        # 如果指定了具体个股，通常也需要大盘背景，不再强制要求 not stock_codes
         if config.market_review_enabled and not args.no_market_review:
-            # 只调用一次，并获取结果
             review_result = run_market_review(
                 notifier=pipeline.notifier,
                 analyzer=pipeline.analyzer,
-                search_service=pipeline.search_service
+                search_service=pipeline.search_service,
+                send_notification=not args.no_notify
             )
-            # 如果有结果，赋值给 market_report 用于后续飞书文档生成
             if review_result:
                 market_report = review_result
+        
+        # 3. 整合报告 (新增)
+        if results and market_report:
+            try:
+                integrated_content = f"# 📝 综合研报\n\n## 📈 大盘复盘\n\n{market_report}\n\n---\n\n"
+                stock_dashboard = pipeline.notifier.generate_dashboard_report(results)
+                integrated_content += f"## 🚀 个股决策仪表盘\n\n{stock_dashboard}"
+                
+                date_str = datetime.now().strftime('%Y%m%d')
+                filepath = pipeline.notifier.save_report_to_file(integrated_content, f"integrated_report_{date_str}.md")
+                logger.info(f"综合研报已保存: {filepath}")
+            except Exception as e:
+                logger.error(f"合并报表失败: {e}")
         
         # 输出摘要
         if results:

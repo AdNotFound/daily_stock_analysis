@@ -260,14 +260,9 @@ class NotificationService:
         avg_score = sum(r.sentiment_score for r in results) / len(results) if results else 0
         
         report_lines.extend([
-            "## 📊 操作建议汇总",
+            "## 📊 建议汇总",
             "",
-            f"| 指标 | 数值 |",
-            f"|------|------|",
-            f"| 🟢 建议买入/加仓 | **{buy_count}** 只 |",
-            f"| 🟡 建议持有/观望 | **{hold_count}** 只 |",
-            f"| 🔴 建议减仓/卖出 | **{sell_count}** 只 |",
-            f"| 📈 平均看多评分 | **{avg_score:.1f}** 分 |",
+            f"🟢加仓:{buy_count} | 🟡持有:{hold_count} | 🔴减仓:{sell_count} | 📈平均:{avg_score:.1f}分",
             "",
             "---",
             "",
@@ -366,6 +361,22 @@ class NotificationService:
                 report_lines.extend([
                     "#### 📰 消息面/情绪面",
                     *news_lines,
+                    "",
+                ])
+            
+            # 资金流向分析
+            if hasattr(result, 'fund_flow_analysis') and result.fund_flow_analysis:
+                report_lines.extend([
+                    "#### 💰 资金流向博弈",
+                    result.fund_flow_analysis,
+                    "",
+                ])
+            
+            # 龙虎榜分析 (新增)
+            if hasattr(result, 'lhb_analysis') and result.lhb_analysis:
+                report_lines.extend([
+                    "#### 🐲 龙虎上榜博弈",
+                    result.lhb_analysis,
                     "",
                 ])
             
@@ -602,8 +613,50 @@ class NotificationService:
                 if chip_data:
                     chip_health = chip_data.get('chip_health', 'N/A')
                     chip_emoji = "✅" if chip_health == "健康" else ("⚠️" if chip_health == "一般" else "🚨")
+                    profit_ratio = f"{chip_data.get('profit_ratio')}%" if chip_data.get('profit_ratio') is not None else "N/A"
                     report_lines.extend([
-                        f"**筹码**: 获利比例 {chip_data.get('profit_ratio', 'N/A')} | 平均成本 {chip_data.get('avg_cost', 'N/A')} | 集中度 {chip_data.get('concentration', 'N/A')} {chip_emoji}{chip_health}",
+                        f"**筹码**: 获利比例 {profit_ratio} | 平均成本 {chip_data.get('avg_cost', 'N/A')} | 集中度 {chip_data.get('concentration', 'N/A')} {chip_emoji}{chip_health}",
+                        "",
+                    ])
+                
+                # 行业与板块 (新增)
+                sector_data = data_persp.get('sector_insight', {})
+                if sector_data:
+                    report_lines.extend([
+                        f"**行业**: {sector_data.get('sector_name', 'N/A')} | 相对强度 {sector_data.get('relative_strength', 'N/A')}%",
+                        f"🏆 *{sector_data.get('position_desc', '')}*",
+                        "",
+                    ])
+                
+                # 动能验证 (新增)
+                momentum_data = data_persp.get('momentum_info', {})
+                if momentum_data:
+                    report_lines.extend([
+                        f"**动能**: RSI {momentum_data.get('rsi', 'N/A')} | KDJ-J {momentum_data.get('kdj_j', 'N/A')} | ⚡ *{momentum_data.get('signal', '')}*",
+                        "",
+                    ])
+                
+                # 资金流向 (新增)
+                fund_data = data_persp.get('fund_flow', {})
+                if fund_data:
+                    main_ratio = fund_data.get('main_ratio')
+                    ratio_str = f"{main_ratio}%" if main_ratio is not None else "N/A"
+                    report_lines.extend([
+                        f"**资金**: {fund_data.get('latest_status', 'N/A')} | 主力占比 {ratio_str}",
+                        f"📉 *趋势: {fund_data.get('flow_trend', 'N/A')}*",
+                        f"⚡ *博弈: {fund_data.get('flow_meaning', 'N/A')}*",
+                        "",
+                    ])
+                
+                # 龙虎榜 (新增)
+                lhb_data = data_persp.get('lhb_insight', {})
+                if lhb_data:
+                    inst_net = lhb_data.get('inst_net')
+                    inst_net_val = inst_net if inst_net is not None else 0
+                    report_lines.extend([
+                        f"**龙虎榜**: {lhb_data.get('latest_status', 'N/A')} | 机构净买入 {inst_net_val/10000:.1f}万",
+                        f"🎯 *核心席位: {lhb_data.get('key_pattern', '')}*",
+                        f"⚔️ *对阵建议: {lhb_data.get('action_suggestion', '')}*",
                         "",
                     ])
             
@@ -766,6 +819,28 @@ class NotificationService:
             
             if info_lines:
                 lines.extend(info_lines)
+                lines.append("")
+            
+            # 资金动向 (新增)
+            fund_data = dashboard.get('data_perspective', {}).get('fund_flow', {})
+            if fund_data:
+                main_ratio = fund_data.get('main_ratio')
+                ratio_str = f"({main_ratio}%)" if main_ratio is not None else "(N/A)"
+                lines.append(f"💰 **资金**: {fund_data.get('latest_status', 'N/A')} {ratio_str}")
+                if fund_data.get('flow_meaning'):
+                    lines.append(f"   *{fund_data.get('flow_meaning')[:60]}*")
+                lines.append("")
+            
+            # 龙虎动向 (新增)
+            lhb_data = dashboard.get('data_perspective', {}).get('lhb_insight', {})
+            if lhb_data:
+                lines.append(f"🐲 **龙虎**: {lhb_data.get('key_pattern', 'N/A')} (机构:{lhb_data.get('inst_net', 0)/10000:.0f}万)")
+                lines.append("")
+            
+            # 行业强度 (新增)
+            sector_data = dashboard.get('data_perspective', {}).get('sector_insight', {})
+            if sector_data:
+                lines.append(f"🏭 **行业**: {sector_data.get('sector_name', 'N/A')} | 相对强度 {sector_data.get('relative_strength', 'N/A')}%")
                 lines.append("")
             
             # 风险警报（最重要，醒目显示）
@@ -1585,6 +1660,7 @@ class NotificationService:
             _flush_table_rows(table_buffer, lines)
 
         return "\n".join(lines).strip()
+>>>>>>> upstream/main
     
     def send_to_email(self, content: str, subject: Optional[str] = None) -> bool:
         """

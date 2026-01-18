@@ -170,7 +170,14 @@ class DatabaseManager:
         Base.metadata.create_all(self._engine)
         
         self._initialized = True
-        logger.info(f"数据库初始化完成: {db_url}")
+        # 脱敏处理
+        masked_url = db_url
+        if "sqlite" in db_url:
+            # 对于 sqlite，只显示文件名
+            import os
+            masked_url = f"sqlite:///.../{os.path.basename(db_url.split('///')[-1])}"
+        
+        logger.info(f"数据库初始化完成: {masked_url}")
     
     @classmethod
     def get_instance(cls) -> 'DatabaseManager':

@@ -89,6 +89,13 @@ class AnalysisResult:
     market_sentiment: str = ""  # 市场情绪分析
     hot_topics: str = ""  # 相关热点话题
     
+    # ========== 资金流分析 (新增) ==========
+    fund_flow_analysis: str = ""    # 资金流向及博弈分析
+    lhb_analysis: str = ""          # 龙虎榜及席位分析
+    
+    # ========== 行业与对比分析 (新增) ==========
+    sector_position: str = ""       # 板块地位 (在行业中的强度)
+    
     # ========== 综合分析 ==========
     analysis_summary: str = ""  # 综合分析摘要
     key_points: str = ""  # 核心看点（3-5个要点）
@@ -125,6 +132,10 @@ class AnalysisResult:
             'news_summary': self.news_summary,
             'market_sentiment': self.market_sentiment,
             'hot_topics': self.hot_topics,
+            'fund_flow_analysis': self.fund_flow_analysis,
+            'lhb_analysis': self.lhb_analysis, # 新增
+            'analysis_summary': self.analysis_summary,
+            'fund_flow_analysis': self.fund_flow_analysis,
             'analysis_summary': self.analysis_summary,
             'key_points': self.key_points,
             'risk_warning': self.risk_warning,
@@ -212,6 +223,10 @@ class GeminiAnalyzer:
 
 ## 核心交易理念（必须严格遵守）
 
+### 0. 数据严谨性（防幻觉）
+- **只使用提供的上下文数据**：严禁凭空编造股价、成交额、资金买入额或任何财务指标。
+- **数据缺失处理**：如果 Prompt 中没有提供筹码或资金流向数据，请在 JSON 中将对应数值设置为 `null`，描述设置为 "数据暂未获取" 或 "不适用"。
+
 ### 1. 严进策略（不追高）
 - **绝对不追高**：当股价偏离 MA5 超过 5% 时，坚决不买入
 - **乖离率公式**：(现价 - MA5) / MA5 × 100%
@@ -235,12 +250,34 @@ class GeminiAnalyzer:
 - **次优买点**：回踩 MA10 获得支撑
 - **观望情况**：跌破 MA20 时观望
 
-### 5. 风险排查重点
+### 5. 资金流向博弈（新增判断）
+- **主力吸筹**：主力资金（超大单+大单）连续 3 日净流入，但股价处于横盘或窄幅震荡，视为强力吸筹信号
+- **主力拉升**：主力资金大幅净流入（占比 > 10%）且配合股价放量突破
+- **主力出货**：主力资金大幅净流出（占比 < -10%）且股价放量下跌或高位震荡
+- **量价背离**：股价创新高但主力资金净卖出，需高度警惕顶部风险
+
+### 6. 龙虎榜数据（实战筹码追踪 - 新增）
+- **机构溢价**：若上榜日期近期，且机构席位大额净买入（净买入 > 0），视为高确定性机会。
+- **游资接力**：若出现“顶级游资（如呼家楼、上分）”主买，暗示短线爆发力强，适合博弈，但不宜重仓。
+- **散户陷阱**：若买入榜全是“拉萨天团（东财下属营业部）”，通常暗示筹码极其分散且获利盘不稳，短期见顶概率极高。
+- **孤胆英雄**：若净买入额巨大（占成交额比重 > 5%），由少数席位驱动，属于极强信号。
+
+### 7. 风险排查重点
 - 减持公告（股东、高管减持）
 - 业绩预亏/大幅下滑
 - 监管处罚/立案调查
 - 行业政策利空
 - 大额解禁
+- **行业拖累**：个股极强但所属板块极弱（大跌），需防范补跌风险。
+
+### 8. 行业相对强度（新增）
+- **领涨特质**：个股涨幅 > 板块涨幅 + 1%，且排名板块前 3，视为领涨龙头，溢价更高。
+- **补涨特质**：板块爆发（涨幅 > 2%）但个股滞涨，若基本面无利空，存在补涨空间。
+- **弱势淘汰**：个股跌幅 > 板块跌幅，且板块处于下跌通道，坚决清仓。
+
+### 9. 动能验证（新增）
+- **RSI (14)**：30-50 为强势区启程；> 70 警惕见顶；< 20 关注超跌反弹。
+- **KDJ (J)**：J 值向下拐头或 > 100 时，即便仍是多头排列也应停止追高。
 
 ## 输出格式：决策仪表盘 JSON
 
@@ -291,6 +328,28 @@ class GeminiAnalyzer:
                 "avg_cost": 平均成本,
                 "concentration": 筹码集中度,
                 "chip_health": "健康/一般/警惕"
+            },
+            "fund_flow": {
+                "latest_status": "主力流入/卖出描述",
+                "main_ratio": 净占比数值,
+                "flow_trend": "近5日资金流向趋势描述",
+                "flow_meaning": "资金动向深度解读"
+            },
+            "lhb_insight": {
+                "latest_status": "龙虎榜席位动向描述",
+                "inst_net": 机构净额,
+                "key_pattern": "识别出的席位特征（如：机构抢筹/游资接力/散户派发）",
+                "action_suggestion": "基于席位分布给投资者的操作建议"
+            },
+            "sector_insight": {
+                "sector_name": "行业名称",
+                "relative_strength": "相对强度值",
+                "position_desc": "在行业中的地位描述"
+            },
+            "momentum_info": {
+                "rsi": "RSI数值",
+                "kdj_j": "KDJ-J值",
+                "signal": "动能信号"
             }
         },
         
@@ -342,6 +401,7 @@ class GeminiAnalyzer:
     "news_summary": "新闻摘要",
     "market_sentiment": "市场情绪",
     "hot_topics": "相关热点",
+    "fund_flow_analysis": "主力资金博弈深度解析",
     
     "search_performed": true/false,
     "data_sources": "数据来源说明"
@@ -355,6 +415,7 @@ class GeminiAnalyzer:
 - ✅ 低乖离率：<2%，最佳买点
 - ✅ 缩量回调或放量突破
 - ✅ 筹码集中健康
+- ✅ 资金积极：主力资金净流入且占比 > 5%
 - ✅ 消息面有利好催化
 
 ### 买入（60-79分）：
@@ -392,7 +453,10 @@ class GeminiAnalyzer:
             api_key: Gemini API Key（可选，默认从配置读取）
         """
         config = get_config()
-        self._api_key = api_key or config.gemini_api_key
+        self._current_key_index = 0
+        self._api_keys = config.gemini_api_keys
+        self._api_key = self._api_keys[0] if self._api_keys else None
+        
         self._model = None
         self._current_model_name = None  # 当前使用的模型名称
         self._using_fallback = False  # 是否正在使用备选模型
@@ -517,6 +581,38 @@ class GeminiAnalyzer:
             logger.error(f"Gemini 模型初始化失败: {e}")
             self._model = None
     
+    def _switch_to_next_key(self) -> bool:
+        """
+        切换到下一个 API Key
+        
+        Returns:
+            是否成功切换
+        """
+        if not self._api_keys or len(self._api_keys) <= 1:
+            logger.warning("[Gemini] 只有一个 API Key，无法切换")
+            return False
+            
+        self._current_key_index = (self._current_key_index + 1) % len(self._api_keys)
+        self._api_key = self._api_keys[self._current_key_index]
+        
+        logger.warning(f"[Gemini] 尝试切换到下一个 API Key (索引: {self._current_key_index}/{len(self._api_keys)})")
+        
+        try:
+            # 重新初始化模型（保持当前使用的模型名称，如果是备选则继续用备选）
+            import google.generativeai as genai
+            genai.configure(api_key=self._api_key)
+            
+            # 使用当前选择的模型名称重新构建
+            self._model = genai.GenerativeModel(
+                model_name=self._current_model_name,
+                system_instruction=self.SYSTEM_PROMPT,
+            )
+            logger.info(f"[Gemini] 切换 API Key 并重新初始化成功 ({self._current_model_name})")
+            return True
+        except Exception as e:
+            logger.error(f"[Gemini] 切换 API Key 后初始化失败: {e}")
+            return False
+
     def _switch_to_fallback_model(self) -> bool:
         """
         切换到备选模型
@@ -657,13 +753,18 @@ class GeminiAnalyzer:
                 if is_rate_limit:
                     logger.warning(f"[Gemini] API 限流 (429)，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
                     
-                    # 如果已经重试了一半次数且还没切换过备选模型，尝试切换
-                    if attempt >= max_retries // 2 and not tried_fallback:
+                    # 优先尝试切换 API Key
+                    if self._switch_to_next_key():
+                        logger.info("[Gemini] 已切换到下一个 API Key，继续重试")
+                    # 如果不能切换 Key，且还没切换过备选模型，尝试切换模型
+                    elif attempt >= max_retries // 2 and not tried_fallback:
                         if self._switch_to_fallback_model():
                             tried_fallback = True
                             logger.info("[Gemini] 已切换到备选模型，继续重试")
                         else:
                             logger.warning("[Gemini] 切换备选模型失败，继续使用当前模型重试")
+                    else:
+                        logger.warning("[Gemini] 无法切换 Key 或模型，继续重试")
                 else:
                     # 非限流错误，记录并继续重试
                     logger.warning(f"[Gemini] API 调用失败，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
@@ -762,8 +863,12 @@ class GeminiAnalyzer:
             logger.info(f"[LLM配置] 是否包含新闻: {'是' if news_context else '否'}")
             
             # 记录完整 prompt 到日志（INFO级别记录摘要，DEBUG记录完整）
+            # 注意：Prompt 核心内容不含 Key，但为保险起见，如果包含则脱敏（此处主要为防止意外泄露）
             prompt_preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
             logger.info(f"[LLM Prompt 预览]\n{prompt_preview}")
+            # 完整 prompt 记录在 DEBUG 级别，通常不建议在生产环境开启
+            logger.debug("=== 完整 Prompt 已记录在 log 文件中 ===")
+            # 写入完整 prompt 到特定调试文件而非主日志（可选，此处保持在 DEBUG）
             logger.debug(f"=== 完整 Prompt ({len(prompt)}字符) ===\n{prompt}\n=== End Prompt ===")
             
             # 设置生成配置
@@ -861,13 +966,30 @@ class GeminiAnalyzer:
 | 成交量 | {self._format_volume(today.get('volume'))} |
 | 成交额 | {self._format_amount(today.get('amount'))} |
 
-### 均线系统（关键判断指标）
-| 均线 | 数值 | 说明 |
+### 行业板块表现（新增）
+- **所属板块**：{context.get('realtime', {}).get('industry', '未知')}
+"""
+        # 添加行业排名详细信息
+        if 'sector_analysis' in context:
+            ind = context['sector_analysis']
+            prompt += f"""
+- **板块涨跌**：{ind.get('change_pct'):+.2f}% (排名第{ind.get('rank')})
+- **相对强度**：{ind.get('relative_strength'):+.2f}% ({'领涨龙头' if ind.get('relative_strength', 0) > 1 else '跟随波动'})
+- **板块领涨**：{ind.get('leading_stock')}
+"""
+        
+        # 添加均线与动能系统数据
+        trend_data = context.get('trend_analysis', {})
+        prompt += f"""
+### 均线与动能系统（趋势验证）
+| 指标 | 数值 | 说明 |
 |------|------|------|
 | MA5 | {today.get('ma5', 'N/A')} | 短期趋势线 |
 | MA10 | {today.get('ma10', 'N/A')} | 中短期趋势线 |
 | MA20 | {today.get('ma20', 'N/A')} | 中期趋势线 |
 | 均线形态 | {context.get('ma_status', '未知')} | 多头/空头/缠绕 |
+| **RSI(14)** | **{trend_data.get('rsi', 0):.1f}** | {'超买⚠️' if trend_data.get('rsi', 0) > 70 else '超卖✅' if trend_data.get('rsi', 0) < 30 else '中性'} |
+| **KDJ(J)** | **{trend_data.get('kdj', {}).get('j', 0):.1f}** | {'极高警惕' if trend_data.get('kdj', {}).get('j', 0) > 100 else '底部区域' if trend_data.get('kdj', {}).get('j', 0) < 0 else '正常'} |
 """
         
         # 添加实时行情数据（量比、换手率等）
@@ -927,6 +1049,47 @@ class GeminiAnalyzer:
 {chr(10).join('- ' + r for r in trend.get('risk_factors', ['无'])) if trend.get('risk_factors') else '- 无'}
 """
         
+        # 添加资金流向数据
+        if 'fund_flow' in context:
+            ff = context['fund_flow']
+            ff_desc = context.get('fund_flow_desc', {})
+            
+            prompt += f"""
+### 资金流向数据（博弈指标）
+| 日期 | 主力净流入(万) | 主力占比 | 状态 |
+|------|----------------|----------|------|
+"""
+            for f in ff[-5:]: # 取近5天
+                prompt += f"| {f.get('date')} | {f.get('main_net_in'):.0f} | {f.get('main_net_in_ratio'):.2f}% | {f.get('status')} |\n"
+            
+            prompt += f"""
+#### 资金概览
+- **最新状态**：{ff_desc.get('status', '未知')}
+- **5日平均占比**：{ff_desc.get('avg_main_ratio_5d', 0):.2f}%
+"""
+
+            # 添加龙虎榜数据
+            if 'lhb_detail' in context:
+                lhb = context['lhb_detail']
+                prompt += f"""
+### 龙虎榜详情（实战席位）
+- **上榜日期**：{lhb.get('latest_lhb_date')}
+- **上榜原因**：{lhb.get('reason')}
+- **机构净买入**：{lhb.get('inst_net', 0)/10000:.1f}万
+
+| 买入席位 | 买入额(万) | 标签 |
+|----------|------------|------|
+"""
+                for d in lhb.get('buy_desks', []):
+                    prompt += f"| {d.get('name')} | {d.get('buy', 0)/10000:.0f} | {d.get('tags')} |\n"
+
+                prompt += f"""
+| 卖出席位 | 卖出额(万) | 标签 |
+|----------|------------|------|
+"""
+                for d in lhb.get('sell_desks', []):
+                    prompt += f"| {d.get('name')} | {d.get('sell', 0)/10000:.0f} | {d.get('tags')} |\n"
+        
         # 添加昨日对比数据
         if 'yesterday' in context:
             volume_change = context.get('volume_change_ratio', 'N/A')
@@ -970,8 +1133,9 @@ class GeminiAnalyzer:
 1. ❓ 是否满足 MA5>MA10>MA20 多头排列？
 2. ❓ 当前乖离率是否在安全范围内（<5%）？—— 超过5%必须标注"严禁追高"
 3. ❓ 量能是否配合（缩量回调/放量突破）？
-4. ❓ 筹码结构是否健康？
-5. ❓ 消息面有无重大利空？（减持、处罚、业绩变脸等）
+4. ❓ 资金面是否支持（主力资金是否在持续流入或大幅买入）？
+5. ❓ 筹码结构是否健康？
+6. ❓ 消息面有无重大利空？（减持、处罚、业绩变脸等）
 
 ### 决策仪表盘要求：
 - **核心结论**：一句话说清该买/该卖/该等
@@ -1068,6 +1232,9 @@ class GeminiAnalyzer:
                     news_summary=data.get('news_summary', ''),
                     market_sentiment=data.get('market_sentiment', ''),
                     hot_topics=data.get('hot_topics', ''),
+                    # 资金与博弈 (新增)
+                    fund_flow_analysis=data.get('fund_flow_analysis', ''),
+                    lhb_analysis=data.get('lhb_analysis', ''),
                     # 综合
                     analysis_summary=data.get('analysis_summary', '分析完成'),
                     key_points=data.get('key_points', ''),
