@@ -1660,7 +1660,6 @@ class NotificationService:
             _flush_table_rows(table_buffer, lines)
 
         return "\n".join(lines).strip()
->>>>>>> upstream/main
     
     def send_to_email(self, content: str, subject: Optional[str] = None) -> bool:
         """
