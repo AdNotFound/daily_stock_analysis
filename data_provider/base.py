@@ -511,6 +511,13 @@ class DataFetcherManager:
                             break
                 
                 if quote is not None and quote.has_basic_data():
+                    # 特殊逻辑：如果我们拿到了行情但缺少“换手率”（常见于 akshare_sina）
+                    # 则继续尝试下一个数据源，除非这是最后一个数据源
+                    if quote.turnover_rate is None and source != source_priority[-1].strip().lower():
+                        logger.info(f"[实时行情] {stock_code} 来源 {source} 缺失关键指标(换手率)，尝试下一个源...")
+                        errors.append(f"{source}: 缺失换手率")
+                        continue
+                    
                     logger.info(f"[实时行情] {stock_code} 成功获取 (来源: {source})")
                     return quote
                     
@@ -576,4 +583,30 @@ class DataFetcherManager:
         except Exception as e:
             logger.error(f"[筹码分布] 获取 {stock_code} 失败: {e}")
             circuit_breaker.record_failure("akshare_chip", str(e))
+            return None
+
+    def get_money_flow(self, stock_code: str):
+        """
+        获取资金流向数据
+        
+        策略：调用 AkshareFetcher.get_money_flow()
+        目前仅 Akshare 支持，暂不实现多源 Failover
+        
+        Args:
+            stock_code: 股票代码
+            
+        Returns:
+            UnifiedMoneyFlow 对象，失败则返回 None
+        """
+        try:
+            for fetcher in self._fetchers:
+                if fetcher.name == "AkshareFetcher":
+                    if hasattr(fetcher, 'get_money_flow'):
+                        return fetcher.get_money_flow(stock_code)
+                    break
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"[资金流向] 获取 {stock_code} 失败: {e}")
             return None

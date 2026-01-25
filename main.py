@@ -44,7 +44,7 @@ from src.feishu_doc import FeishuDocManager
 from src.config import get_config, Config
 from src.storage import get_db, DatabaseManager
 from data_provider import DataFetcherManager
-from data_provider.realtime_types import UnifiedRealtimeQuote, ChipDistribution
+from data_provider.realtime_types import UnifiedRealtimeQuote, ChipDistribution, UnifiedMoneyFlow
 from src.analyzer import GeminiAnalyzer, AnalysisResult, STOCK_NAME_MAP
 from src.notification import NotificationService, NotificationChannel, send_daily_report
 from bot.models import BotMessage
@@ -297,6 +297,17 @@ class StockAnalysisPipeline:
             except Exception as e:
                 logger.warning(f"[{code}] 获取筹码分布失败: {e}")
             
+            # Step 2.5: 获取资金流向 - 新增
+            money_flow = None
+            try:
+                money_flow = self.fetcher_manager.get_money_flow(code)
+                if money_flow:
+                    logger.info(f"[{code}] 资金流向: {money_flow.get_money_flow_status()}")
+                else:
+                    logger.debug(f"[{code}] 资金流向获取失败或暂不支持")
+            except Exception as e:
+                logger.warning(f"[{code}] 获取资金流向失败: {e}")
+            
             # Step 3: 趋势分析（基于交易理念）
             trend_result: Optional[TrendAnalysisResult] = None
             try:
@@ -373,7 +384,8 @@ class StockAnalysisPipeline:
                 realtime_quote, 
                 chip_data, 
                 trend_result,
-                stock_name  # 传入股票名称
+                stock_name,  # 传入股票名称
+                money_flow  # 传入资金流向
             )
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
@@ -392,12 +404,13 @@ class StockAnalysisPipeline:
         realtime_quote,  # UnifiedRealtimeQuote 或 None
         chip_data: Optional[ChipDistribution],
         trend_result: Optional[TrendAnalysisResult],
-        stock_name: str = ""
+        stock_name: str = "",
+        money_flow: Optional[UnifiedMoneyFlow] = None
     ) -> Dict[str, Any]:
         """
         增强分析上下文
         
-        将实时行情、筹码分布、趋势分析结果、股票名称添加到上下文中
+        将实时行情、筹码分布、趋势分析结果、股票名称、资金流向添加到上下文中
         
         Args:
             context: 原始上下文
@@ -405,6 +418,7 @@ class StockAnalysisPipeline:
             chip_data: 筹码分布数据
             trend_result: 趋势分析结果
             stock_name: 股票名称
+            money_flow: 资金流向数据
             
         Returns:
             增强后的上下文
@@ -467,6 +481,19 @@ class StockAnalysisPipeline:
                 'signal_score': trend_result.signal_score,
                 'signal_reasons': trend_result.signal_reasons,
                 'risk_factors': trend_result.risk_factors,
+            }
+        
+        # 添加资金流向
+        if money_flow:
+            enhanced['money_flow'] = {
+                'date': money_flow.date,
+                'net_main': money_flow.net_main,
+                'pct_main': money_flow.pct_main,
+                'net_super_large': money_flow.net_super_large,
+                'net_large': money_flow.net_large,
+                'net_medium': money_flow.net_medium,
+                'net_small': money_flow.net_small,
+                'status': money_flow.get_money_flow_status(),
             }
         
         return enhanced

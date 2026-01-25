@@ -261,6 +261,58 @@ class ChipDistribution:
         return "，".join(status_parts)
 
 
+@dataclass
+class UnifiedMoneyFlow:
+    """
+    统一资金流向数据结构
+    
+    反映主力、散户资金的流入流出统计
+    """
+    code: str
+    date: str = ""
+    
+    # 净流入金额 (万元)
+    net_main: float = 0.0        # 主力净流入
+    net_super_large: float = 0.0 # 超大单净流入
+    net_large: float = 0.0       # 大单净流入
+    net_medium: float = 0.0      # 中单净流入
+    net_small: float = 0.0       # 小单净流入
+    
+    # 净流入占比 (%)
+    pct_main: float = 0.0
+    pct_super_large: float = 0.0
+    pct_large: float = 0.0
+    pct_medium: float = 0.0
+    pct_small: float = 0.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典"""
+        return {
+            'code': self.code,
+            'date': self.date,
+            'net_main': self.net_main,
+            'pct_main': self.pct_main,
+            'net_super_large': self.net_super_large,
+            'net_large': self.net_large,
+            'net_medium': self.net_medium,
+            'net_small': self.net_small,
+            'status': self.get_money_flow_status()
+        }
+        
+    def get_money_flow_status(self) -> str:
+        """获取资金流向状态描述"""
+        if self.net_main > 10000:
+            return f"主力大幅流入({self.net_main/10000:.1f}亿)"
+        elif self.net_main > 2000:
+            return f"主力净流入({self.net_main:.0f}万)"
+        elif self.net_main < -10000:
+            return f"主力大幅流出({abs(self.net_main)/10000:.1f}亿)"
+        elif self.net_main < -2000:
+            return f"主力净流出({abs(self.net_main):.0f}万)"
+        else:
+            return "资金流向平稳"
+
+
 class CircuitBreaker:
     """
     熔断器 - 管理数据源的熔断/冷却状态

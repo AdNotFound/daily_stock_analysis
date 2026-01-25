@@ -41,7 +41,7 @@ from tenacity import (
 
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS
 from .realtime_types import (
-    UnifiedRealtimeQuote, ChipDistribution, RealtimeSource,
+    UnifiedRealtimeQuote, ChipDistribution, RealtimeSource, UnifiedMoneyFlow,
     get_realtime_circuit_breaker, get_chip_circuit_breaker,
     safe_float, safe_int  # 使用统一的类型转换函数
 )
@@ -1046,6 +1046,78 @@ class AkshareFetcher(BaseFetcher):
             logger.error(f"[API错误] 获取 {stock_code} 筹码分布失败: {e}")
             return None
     
+    def get_money_flow(self, stock_code: str) -> Optional[UnifiedMoneyFlow]:
+        """
+        获取个股主力资金流向
+        
+        数据来源：ak.stock_individual_fund_flow()
+        包含：主力净流入、超大单、大单、中单、小单净流入
+        """
+        import akshare as ak
+        import os
+
+        # 美股/ETF 暂时不支持资金流向
+        if _is_us_code(stock_code) or _is_etf_code(stock_code):
+            return None
+        
+        # 备份并清理代理设置（关键：解决 ProxyError）
+        old_http = os.environ.get('HTTP_PROXY')
+        old_https = os.environ.get('HTTPS_PROXY')
+        if 'HTTP_PROXY' in os.environ: del os.environ['HTTP_PROXY']
+        if 'HTTPS_PROXY' in os.environ: del os.environ['HTTPS_PROXY']
+        
+        try:
+            # 防封禁策略
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            
+            logger.info(f"[API调用] ak.stock_individual_fund_flow(stock={stock_code})")
+            import time as _time
+            api_start = _time.time()
+            
+            # 调用 akshare
+            df = ak.stock_individual_fund_flow(stock=stock_code)
+            
+            api_elapsed = _time.time() - api_start
+            
+            if df is None or df.empty:
+                logger.warning(f"[API返回] ak.stock_individual_fund_flow 返回空数据")
+                return None
+            
+            # 取最新一天的数据
+            latest = df.iloc[-1]
+            
+            # 使用 UnifiedMoneyFlow 封装数据
+            # 兼容不同版本的列名
+            net_main = safe_float(latest.get('主力净流入-净额'))
+            if net_main is None: net_main = safe_float(latest.get('主力净流入'))
+            
+            money_flow = UnifiedMoneyFlow(
+                code=stock_code,
+                date=str(latest.get('日期', '')),
+                net_main=net_main or 0.0,
+                pct_main=safe_float(latest.get('主力净流入-净占比'), 0.0),
+                net_super_large=safe_float(latest.get('超大单净流入-净额'), 0.0),
+                pct_super_large=safe_float(latest.get('超大单净流入-净占比'), 0.0),
+                net_large=safe_float(latest.get('大单净流入-净额'), 0.0),
+                pct_large=safe_float(latest.get('大单净流入-净占比'), 0.0),
+                net_medium=safe_float(latest.get('中单净流入-净额'), 0.0),
+                pct_medium=safe_float(latest.get('中单净流入-净占比'), 0.0),
+                net_small=safe_float(latest.get('小单净流入-净额'), 0.0),
+                pct_small=safe_float(latest.get('小单净流入-净占比'), 0.0),
+            )
+            
+            logger.info(f"[资金流向] {stock_code} {money_flow.date}: {money_flow.get_money_flow_status()}")
+            return money_flow
+            
+        except Exception as e:
+            logger.error(f"[API错误] 获取 {stock_code} 资金流向失败: {e}")
+            return None
+        finally:
+            # 还原代理设置
+            if old_http: os.environ['HTTP_PROXY'] = old_http
+            if old_https: os.environ['HTTPS_PROXY'] = old_https
+
     def get_enhanced_data(self, stock_code: str, days: int = 60) -> Dict[str, Any]:
         """
         获取增强数据（历史K线 + 实时行情 + 筹码分布）
