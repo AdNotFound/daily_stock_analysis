@@ -430,18 +430,40 @@ class GeminiAnalyzer:
             api_key: Gemini API Key（可选，默认从配置读取）
         """
         config = get_config()
-        self._api_key = api_key or config.gemini_api_key
+        self._config_api_key = api_key or config.gemini_api_key
+        
+        # 加载所有可用 keys
+        self._api_keys = []
+        if api_key:
+            self._api_keys.append(api_key)
+        
+        if config.gemini_api_keys:
+            # 去重添加
+            for k in config.gemini_api_keys:
+                if k not in self._api_keys:
+                    self._api_keys.append(k)
+        
+        if not self._api_keys and config.gemini_api_key:
+             if config.gemini_api_key not in self._api_keys:
+                self._api_keys.append(config.gemini_api_key)
+        
+        # 过滤无效 key
+        self._api_keys = [k for k in self._api_keys if k and not k.startswith('your_') and len(k) > 10]
+        
+        self._current_key_index = 0
+        self._api_key = self._api_keys[0] if self._api_keys else None
+        
+        import threading
+        self._key_lock = threading.Lock()
+        
         self._model = None
         self._current_model_name = None  # 当前使用的模型名称
         self._using_fallback = False  # 是否正在使用备选模型
         self._use_openai = False  # 是否使用 OpenAI 兼容 API
         self._openai_client = None  # OpenAI 客户端
         
-        # 检查 Gemini API Key 是否有效（过滤占位符）
-        gemini_key_valid = self._api_key and not self._api_key.startswith('your_') and len(self._api_key) > 10
-        
         # 优先尝试初始化 Gemini
-        if gemini_key_valid:
+        if self._api_keys:
             try:
                 self._init_model()
             except Exception as e:
@@ -455,6 +477,37 @@ class GeminiAnalyzer:
         # 两者都未配置
         if not self._model and not self._openai_client:
             logger.warning("未配置任何 AI API Key，AI 分析功能将不可用")
+
+    def _rotate_key(self) -> bool:
+        """
+        轮换 Gemini API Key
+        
+        Returns:
+            bool: 是否成功切换到下一个 Key
+        """
+        if not self._api_keys or len(self._api_keys) <= 1:
+            return False
+            
+        with self._key_lock:
+            # 切换到下一个 key
+            self._current_key_index = (self._current_key_index + 1) % len(self._api_keys)
+            new_key = self._api_keys[self._current_key_index]
+            
+            if new_key == self._api_key:
+                # 只有一把钥匙或者已经转了一圈（理论上上面的check已经防住了，但双重保险）
+                return False
+                
+            logger.info(f"[Gemini] 触发 Key 轮换: 切换到第 {self._current_key_index + 1}/{len(self._api_keys)} 个 Key")
+            self._api_key = new_key
+            
+            # 重新配置 genai
+            try:
+                import google.generativeai as genai
+                genai.configure(api_key=self._api_key)
+                return True
+            except Exception as e:
+                logger.error(f"[Gemini] Key 轮换失败: {e}")
+                return False
     
     def _init_openai_fallback(self) -> None:
         """
@@ -695,7 +748,15 @@ class GeminiAnalyzer:
                 if is_rate_limit:
                     logger.warning(f"[Gemini] API 限流 (429)，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
                     
-                    # 如果已经重试了一半次数且还没切换过备选模型，尝试切换
+                    # 尝试轮换 Key
+                    if self._rotate_key():
+                        # 如果有多个Key，轮换后应该立即重试（虽然Tenacity会等待，但这里我们尽量争取）
+                        # 注意：这里的 continue 会进入下一次循环，从 delay 开始
+                        # 如果不希望 delay，可以修改逻辑，但保持一致性较好
+                        logger.info("[Gemini]以此 Key 重试...")
+                        continue
+                    
+                    # 如果不能轮换（单Key或已轮完），且已经重试了一半次数，尝试切换备选模型
                     if attempt >= max_retries // 2 and not tried_fallback:
                         if self._switch_to_fallback_model():
                             tried_fallback = True
