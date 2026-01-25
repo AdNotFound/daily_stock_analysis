@@ -12,7 +12,7 @@ A股自选股智能分析系统 - 配置管理模块
 
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv, dotenv_values
 from dataclasses import dataclass, field
 
