@@ -591,6 +591,8 @@ class StockAnalysisPipeline:
         """
         start_time = time.time()
         
+        is_custom_list = stock_codes is not None
+        
         # 使用配置中的股票列表
         if stock_codes is None:
             self.config.refresh_stock_list()
@@ -671,18 +673,27 @@ class StockAnalysisPipeline:
         logger.info(f"===== 分析完成 =====")
         logger.info(f"成功: {success_count}, 失败: {fail_count}, 耗时: {elapsed_time:.2f} 秒")
         
+        # 生成自定义文件名（如果是命令行指定个股）
+        report_filename = None
+        if is_custom_list and results:
+            date_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+            # 取前两个代码作为后缀
+            suffix = "_".join(stock_codes[:2])
+            report_filename = f"report_{suffix}_{date_str}.md"
+            logger.info(f"检测到个股分析模式，报告将保存为: {report_filename}")
+
         # 发送通知（单股推送模式下跳过汇总推送，避免重复）
         if results and send_notification and not dry_run:
             if single_stock_notify:
                 # 单股推送模式：只保存汇总报告，不再重复推送
                 logger.info("单股推送模式：跳过汇总推送，仅保存报告到本地")
-                self._send_notifications(results, skip_push=True)
+                self._send_notifications(results, skip_push=True, filename=report_filename)
             else:
-                self._send_notifications(results)
+                self._send_notifications(results, filename=report_filename)
         
         return results
     
-    def _send_notifications(self, results: List[AnalysisResult], skip_push: bool = False) -> None:
+    def _send_notifications(self, results: List[AnalysisResult], skip_push: bool = False, filename: Optional[str] = None) -> None:
         """
         发送分析结果通知
         
@@ -691,6 +702,7 @@ class StockAnalysisPipeline:
         Args:
             results: 分析结果列表
             skip_push: 是否跳过推送（仅保存到本地，用于单股推送模式）
+            filename: 自定义报告文件名
         """
         try:
             logger.info("生成决策仪表盘日报...")
@@ -699,7 +711,7 @@ class StockAnalysisPipeline:
             report = self.notifier.generate_dashboard_report(results)
             
             # 保存到本地
-            filepath = self.notifier.save_report_to_file(report)
+            filepath = self.notifier.save_report_to_file(report, filename=filename)
             logger.info(f"决策仪表盘日报已保存: {filepath}")
             
             # 跳过推送（单股推送模式）
