@@ -207,17 +207,23 @@ class AnalysisResult:
     
     def get_emoji(self) -> str:
         """根据操作建议返回对应 emoji"""
-        emoji_map = {
-            '买入': '🟢',
-            '加仓': '🟢',
-            '强烈买入': '💚',
-            '持有': '🟡',
-            '观望': '⚪',
-            '减仓': '🟠',
-            '卖出': '🔴',
-            '强烈卖出': '❌',
-        }
-        return emoji_map.get(self.operation_advice, '🟡')
+        advice = self.operation_advice
+        score = self.sentiment_score
+        
+        # 优先基于文本匹配
+        if '强烈买入' in advice: return '💚'
+        if '买入' in advice or '加仓' in advice: return '🟢'
+        if '持有' in advice: return '🟡'
+        if '观望' in advice: return '⚪'
+        if '减仓' in advice: return '🟠'
+        if '强烈卖出' in advice: return '❌'
+        if '卖出' in advice: return '🔴'
+        
+        # 文本匹配失败，基于分数回退
+        if score >= 80: return '💚'
+        if score >= 60: return '🟢'
+        if score >= 40: return '🟡'
+        return '🔴'
     
     def get_confidence_stars(self) -> str:
         """返回置信度星级"""
