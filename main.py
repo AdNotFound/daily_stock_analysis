@@ -137,7 +137,8 @@ class StockAnalysisPipeline:
         self,
         config: Optional[Config] = None,
         max_workers: Optional[int] = None,
-        source_message: Optional[BotMessage] = None
+        source_message: Optional[BotMessage] = None,
+        midday: bool = False
     ):
         """
         初始化调度器
@@ -145,10 +146,12 @@ class StockAnalysisPipeline:
         Args:
             config: 配置对象（可选，默认使用全局配置）
             max_workers: 最大并发线程数（可选，默认从配置读取）
+            midday: 是否为午盘分析模式（合成即时K线）
         """
         self.config = config or get_config()
         self.max_workers = max_workers or self.config.max_workers
         self.source_message = source_message
+        self.midday = midday
         
         # 初始化各模块
         self.db = get_db()
@@ -216,6 +219,15 @@ class StockAnalysisPipeline:
             if df is None or df.empty:
                 return False, "获取数据为空"
             
+            # 午盘模式下，不保存今日的非完整数据，只保存历史遗漏数据
+            if self.midday:
+                today_str = str(date.today())
+                # 过滤掉今日数据
+                df = df[df['date'] != today_str]
+                if df.empty:
+                    logger.info(f"[{code}] 午盘模式：仅获取到今日数据，跳过保存")
+                    return True, None
+
             # 保存到数据库
             saved_count = self.db.save_daily_data(df, code, source_name)
             logger.info(f"[{code}] 数据保存成功（来源: {source_name}，新增 {saved_count} 条）")
@@ -294,6 +306,30 @@ class StockAnalysisPipeline:
                     raw_data = context['raw_data']
                     if isinstance(raw_data, list) and len(raw_data) > 0:
                         df = pd.DataFrame(raw_data)
+                        
+                        # [午盘分析] 如果是午盘模式且有实时行情，合成今日K线
+                        if self.midday and realtime_quote:
+                            try:
+                                # 构建今日数据行
+                                today_row = {
+                                    'date': datetime.now().strftime('%Y-%m-%d'),
+                                    'open': realtime_quote.open_price,
+                                    'high': realtime_quote.high,
+                                    'low': realtime_quote.low,
+                                    'close': realtime_quote.price,
+                                    'volume': realtime_quote.volume, 
+                                    'amount': realtime_quote.amount,
+                                    'pct_chg': realtime_quote.change_pct
+                                }
+                                # 确保字段完整性，避免 NaN
+                                if all(v is not None for v in today_row.values()):
+                                    # 将字典转换为 DataFrame 并合并
+                                    today_df = pd.DataFrame([today_row])
+                                    df = pd.concat([df, today_df], ignore_index=True)
+                                    logger.info(f"[{code}] 午盘分析：已合成今日即时K线 (Close={today_row['close']})")
+                            except Exception as e:
+                                logger.warning(f"[{code}] 合成即时K线失败: {e}")
+
                         trend_result = self.trend_analyzer.analyze(df, code)
                         logger.info(f"[{code}] 趋势分析: {trend_result.trend_status.value}, "
                                   f"买入信号={trend_result.buy_signal.value}, 评分={trend_result.signal_score}")
@@ -399,6 +435,11 @@ class StockAnalysisPipeline:
             }
             # 移除 None 值以减少上下文大小
             enhanced['realtime'] = {k: v for k, v in enhanced['realtime'].items() if v is not None}
+        
+        # 标记午盘分析
+        if self.midday:
+            enhanced['is_midday'] = True
+            enhanced['analysis_time'] = '午盘 (11:30-13:00)'
         
         # 添加筹码分布
         if chip_data:
@@ -774,6 +815,12 @@ def parse_arguments() -> argparse.Namespace:
     )
     
     parser.add_argument(
+        '--midday',
+        action='store_true',
+        help='启用午盘分析模式（合成即时K线但不保存今日数据）'
+    )
+    
+    parser.add_argument(
         '--no-market-review',
         action='store_true',
         help='跳过大盘复盘分析'
@@ -864,7 +911,8 @@ def run_full_analysis(
         # 创建调度器
         pipeline = StockAnalysisPipeline(
             config=config,
-            max_workers=args.workers
+            max_workers=args.workers,
+            midday=getattr(args, 'midday', False)
         )
         
         # 1. 运行个股分析
