@@ -258,8 +258,9 @@ class StockAnalysisPipeline:
             AnalysisResult 或 None（如果分析失败）
         """
         try:
-            # 获取股票名称（优先从实时行情获取真实名称）
-            stock_name = STOCK_NAME_MAP.get(code, '')
+            # 获取股票名称（优先从配置中获取，其次从本地缓存，最后从实时行情）
+            stock_metadata = self.config.stock_info.get(code, {})
+            stock_name = stock_metadata.get('name') or STOCK_NAME_MAP.get(code, '')
             
             # Step 1: 获取实时行情（量比、换手率等）- 使用统一入口，自动故障切换
             realtime_quote = None

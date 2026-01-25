@@ -84,47 +84,35 @@ class ConfigService:
         return os.path.basename(self.env_path)
     
     def _extract_stock_list(self, env_text: str) -> str:
-        """从环境文件中提取 STOCK_LIST 值"""
-        for line in env_text.splitlines():
-            m = _STOCK_LIST_RE.match(line)
-            if m:
-                raw = m.group("value").strip()
-                # 去除引号
-                if (raw.startswith('"') and raw.endswith('"')) or \
-                   (raw.startswith("'") and raw.endswith("'")):
-                    raw = raw[1:-1]
-                return raw
+        """从环境文件中提取 STOCK_LIST 值（支持单行和多行引号包裹）"""
+        # 使用正则表达式匹配，支持 DOTALL 模式以匹配跨行内容
+        pattern = re.compile(r'^\s*STOCK_LIST\s*=\s*(?P<quote>["\']?)(?P<value>.*?)(?P=quote)\s*$', re.MULTILINE | re.DOTALL)
+        match = pattern.search(env_text)
+        if match:
+            return match.group("value").strip()
         return ""
     
     def _normalize_stock_list(self, value: str) -> str:
-        """规范化股票列表格式"""
-        parts = [p.strip() for p in value.replace("\n", ",").split(",")]
+        """规范化股票列表格式，如果是传入的多行，则保留基本格式但统一分隔符"""
+        # 统一将换行符视为逗号
+        parts = [p.strip() for p in re.split(r'[,\n\r]+', value)]
         parts = [p for p in parts if p]
+        # 如果是 web 提交，通常我们还是返回逗号分隔的单行，或者你可以根据喜好决定
         return ",".join(parts)
     
     def _update_stock_list(self, env_text: str, new_value: str) -> str:
-        """更新环境文件中的 STOCK_LIST"""
-        lines = env_text.splitlines(keepends=False)
-        out_lines: List[str] = []
-        replaced = False
+        """更新环境文件中的 STOCK_LIST，如果包含换行则自动加上引号"""
+        pattern = re.compile(r'^(\s*STOCK_LIST\s*=\s*)(["\']?)(.*?)(?P=quote)(\s*)$', re.MULTILINE | re.DOTALL)
         
-        for line in lines:
-            m = _STOCK_LIST_RE.match(line)
-            if not m:
-                out_lines.append(line)
-                continue
-            
-            out_lines.append(f"{m.group('prefix')}{new_value}{m.group('suffix')}")
-            replaced = True
+        replacement = f'STOCK_LIST="{new_value}"' if "\n" in new_value else f'STOCK_LIST={new_value}'
         
-        if not replaced:
-            if out_lines and out_lines[-1].strip() != "":
-                out_lines.append("")
-            out_lines.append(f"STOCK_LIST={new_value}")
-        
-        trailing_newline = env_text.endswith("\n") if env_text else True
-        out = "\n".join(out_lines)
-        return out + ("\n" if trailing_newline else "")
+        if pattern.search(env_text):
+            # 替换已有项
+            return pattern.sub(r'\1' + replacement.split('=', 1)[1] + r'\5', env_text)
+        else:
+            # 追加新项
+            separator = "\n" if env_text and not env_text.endswith("\n") else ""
+            return env_text + separator + replacement + "\n"
 
 
 # ============================================================

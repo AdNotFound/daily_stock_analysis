@@ -30,6 +30,7 @@ class Config:
     
     # === 自选股配置 ===
     stock_list: List[str] = field(default_factory=list)
+    stock_info: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # 存储股票元数据 (名称、板块、类型等)
 
     # === 飞书云文档配置 ===
     feishu_app_id: Optional[str] = None
@@ -230,17 +231,37 @@ class Config:
         env_path = Path(__file__).parent / '.env'
         load_dotenv(dotenv_path=env_path)
         
-        # 解析自选股列表（逗号分隔）
+        # 解析自选股列表（支持 code 或 code|name|sector|type 格式，支持换行或逗号分隔）
         stock_list_str = os.getenv('STOCK_LIST', '')
-        stock_list = [
-            code.strip() 
-            for code in stock_list_str.split(',') 
-            if code.strip()
+        
+        # 将换行替换为逗号，统一处理
+        import re
+        stock_list_raw = [
+            item.strip() 
+            for item in re.split(r'[,\n\r]+', stock_list_str) 
+            if item.strip()
         ]
+        stock_list = []
+        stock_info = {}
+        for item in stock_list_raw:
+            parts = item.split('|')
+            code = parts[0].strip()
+            stock_list.append(code)
+            if len(parts) > 1:
+                stock_info[code] = {
+                    'name': parts[1].strip(),
+                    'sector': parts[2].strip() if len(parts) > 2 else '',
+                    'is_etf': (parts[3].strip().lower() == 'etf') if len(parts) > 3 else ('ETF' in parts[1].upper() if len(parts) > 1 else None)
+                }
         
         # 如果没有配置，使用默认的示例股票
         if not stock_list:
             stock_list = ['600519', '000001', '300750']
+            stock_info = {
+                '600519': {'name': '贵州茅台', 'sector': '白酒', 'is_etf': False},
+                '000001': {'name': '平安银行', 'sector': '银行', 'is_etf': False},
+                '300750': {'name': '宁德时代', 'sector': '锂电池', 'is_etf': False}
+            }
         
         # 解析搜索引擎 API Keys（支持多个 key，逗号分隔）
         bocha_keys_str = os.getenv('BOCHA_API_KEYS', '')
@@ -338,6 +359,7 @@ class Config:
             realtime_source_priority=os.getenv('REALTIME_SOURCE_PRIORITY', 'efinance,akshare_sina,tencent,akshare_em'),
             realtime_cache_ttl=int(os.getenv('REALTIME_CACHE_TTL', '600')),
             circuit_breaker_cooldown=int(os.getenv('CIRCUIT_BREAKER_COOLDOWN', '300')),
+            stock_info=stock_info,
         )
     
     @classmethod
@@ -363,16 +385,31 @@ class Config:
         if not stock_list_str:
             stock_list_str = os.getenv('STOCK_LIST', '')
 
-        stock_list = [
-            code.strip()
-            for code in stock_list_str.split(',')
-            if code.strip()
+        import re
+        stock_list_raw = [
+            item.strip()
+            for item in re.split(r'[,\n\r]+', stock_list_str)
+            if item.strip()
         ]
+
+        stock_list = []
+        stock_info = {}
+        for item in stock_list_raw:
+            parts = item.split('|')
+            code = parts[0].strip()
+            stock_list.append(code)
+            if len(parts) > 1:
+                stock_info[code] = {
+                    'name': parts[1].strip(),
+                    'sector': parts[2].strip() if len(parts) > 2 else '',
+                    'is_etf': (parts[3].strip().lower() == 'etf') if len(parts) > 3 else ('ETF' in parts[1].upper() if len(parts) > 1 else None)
+                }
 
         if not stock_list:        
             stock_list = ['000001']
 
         self.stock_list = stock_list
+        self.stock_info = stock_info
     
     def validate(self) -> List[str]:
         """
