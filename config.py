@@ -333,9 +333,9 @@ class Config:
             enable_realtime_quote=os.getenv('ENABLE_REALTIME_QUOTE', 'true').lower() == 'true',
             enable_chip_distribution=os.getenv('ENABLE_CHIP_DISTRIBUTION', 'true').lower() == 'true',
             # 实时行情数据源优先级：
-            # - akshare_sina/tencent: 单股票直连查询，轻量级，推荐放前面
-            # - efinance/akshare_em: 全量拉取，数据丰富但负载大
-            realtime_source_priority=os.getenv('REALTIME_SOURCE_PRIORITY', 'akshare_sina,tencent,efinance,akshare_em'),
+            # - akshare_sina/tencent: 单股票直连查询，轻量级，但缺乏量比/换手率等高级字段
+            # - efinance/akshare_em: 全量拉取，数据丰富（含市值/PE/PB/量比/换手率），但负载大
+            realtime_source_priority=os.getenv('REALTIME_SOURCE_PRIORITY', 'efinance,akshare_sina,tencent,akshare_em'),
             realtime_cache_ttl=int(os.getenv('REALTIME_CACHE_TTL', '600')),
             circuit_breaker_cooldown=int(os.getenv('CIRCUIT_BREAKER_COOLDOWN', '300')),
         )
