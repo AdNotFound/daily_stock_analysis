@@ -324,7 +324,7 @@ class EfinanceFetcher(BaseFetcher):
             
             # 调用 efinance 获取 ETF 日线数据
             df = ef.fund.get_quote_history(
-                fund_code=stock_code,
+                stock_codes=stock_code,
                 beg=beg_date,
                 end=end_date_fmt,
                 klt=101,  # 日线
